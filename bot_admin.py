@@ -1303,6 +1303,8 @@ async def on_ready():
     await load_prefix_restrictions()
     bot.add_view(VerificationView())
     bot.add_view(AdminPanelView())
+    bot.add_view(TicketPanelView())
+    bot.add_view(CloseTicketView())
 
     _guild = discord.Object(id=_GUILD_ID)
     bot.tree.copy_global_to(guild=_guild)
@@ -1622,36 +1624,186 @@ async def slash_resetrole(interaction: discord.Interaction,
         Type=reset_type, Count=str(len(members))))
 
 
-# ── Welcome disable ───────────────────────────────────────────────────────────
+STAFF_ROLE_ID = 1541906011802050733
+TRANSCRIPT_CHANNEL_ID = 1540713749265256599
 
-@bot.tree.command(name="disablewelcome",
-                  description="Disable the DM welcome message for new members")
-@command_enabled()
-async def slash_disablewelcome(interaction: discord.Interaction):
-    if not await is_allowed_to_giveaway(interaction):
-        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
-    async with db_lock:
-        async with get_db() as db:
-            await db.execute(
-                "UPDATE welcome_config SET enabled=0 WHERE guild_id=?",
-                (interaction.guild.id,))
-            await db.commit()
-    await interaction.response.send_message("🔒 Welcome DM disabled.")
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+intents.members = True
 
 
-@bot.tree.command(name="disablewelcomechannel",
-                  description="Disable the channel welcome message for new members")
-@command_enabled()
-async def slash_disablewelcomechannel(interaction: discord.Interaction):
-    if not await is_allowed_to_giveaway(interaction):
-        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
-    async with db_lock:
-        async with get_db() as db:
-            await db.execute(
-                "UPDATE welcome_config SET channel_enabled=0 WHERE guild_id=?",
-                (interaction.guild.id,))
-            await db.commit()
-    await interaction.response.send_message("🔒 Welcome channel message disabled.")
+active_tickets = set()
+
+
+async def generate_and_send_transcript(channel: discord.TextChannel, guild: discord.Guild):
+    messages = [msg async for msg in channel.history(limit=100, oldest_first=True)]
+    transcript_text = "\n".join(
+        [f"[{msg.created_at.strftime('%Y-%m-%d %H:%M:%S')}] {msg.author}: {msg.content}" for msg in messages]
+    )
+    
+    transcript_file = discord.File(
+        fp=io.BytesIO(transcript_text.encode("utf-8")),
+        filename=f"{channel.name}-transcript.txt"
+    )
+
+    transcript_channel = guild.get_channel(TRANSCRIPT_CHANNEL_ID)
+    if transcript_channel:
+        await transcript_channel.send(
+            content=f"Transcript for ticket **{channel.name}** (User ID: {channel.topic}):",
+            file=transcript_file
+        )
+
+
+# --- MODAL FOR REPORT TICKET ---
+class ReportModal(discord.ui.Modal, title="Report User"):
+    reported_user_id = discord.ui.TextInput(
+        label="Who are you willing to report (User ID)?",
+        placeholder="Enter Discord User ID",
+        required=True,
+        style=discord.TextStyle.short
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        user = interaction.user
+        guild = interaction.guild
+
+        channel = await create_ticket_channel(guild, user, "report")
+        active_tickets.add(user.id)
+
+        ping_msg = await channel.send(f"<@{user.id}> <@&{STAFF_ROLE_ID}>")
+        await ping_msg.delete()
+
+        embed = discord.Embed(
+            title="Report Ticket Opened",
+            description="Please provide proof and details regarding your report.",
+            color=discord.Color.red()
+        )
+        await channel.send(embed=embed, view=CloseTicketView())
+        await channel.send(f"Reported user: <@{self.reported_user_id.value}> ({self.reported_user_id.value})")
+
+        await interaction.followup.send(f"Report ticket created: {channel.mention}", ephemeral=True)
+
+
+class CloseTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="close_ticket")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+        
+        is_staff = staff_role in interaction.user.roles if staff_role else False
+        is_owner = str(interaction.user.id) == channel.topic
+
+        if not is_staff and not is_owner:
+            return await interaction.response.send_message("Only staff or the ticket creator can close this ticket.", ephemeral=True)
+
+        await interaction.response.send_message("Closing ticket and sending transcript...")
+
+        await generate_and_send_transcript(channel, interaction.guild)
+
+        if channel.topic and channel.topic.isdigit():
+            active_tickets.discard(int(channel.topic))
+
+        await channel.delete()
+
+
+class TicketPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Help", emoji="📩", style=discord.ButtonStyle.success, custom_id="panel_help")
+    async def help_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id in active_tickets:
+            return await interaction.response.send_message("You already have an open ticket!", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+        user = interaction.user
+        guild = interaction.guild
+
+        active_tickets.add(user.id)
+        channel = await create_ticket_channel(guild, user, "help")
+
+        ping_msg = await channel.send(f"<@{user.id}> <@&{STAFF_ROLE_ID}>")
+        await ping_msg.delete()
+
+        embed = discord.Embed(
+            title="Help Ticket Created",
+            description="Please describe your issue below. Staff will assist you shortly.",
+            color=discord.Color.green()
+        )
+        await channel.send(embed=embed, view=CloseTicketView())
+        await interaction.followup.send(f"Ticket created: {channel.mention}", ephemeral=True)
+
+    @discord.ui.button(label="Trade", emoji="🛡️", style=discord.ButtonStyle.primary, custom_id="panel_trade")
+    async def trade_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Trade ticket system pending your instructions!", ephemeral=True)
+
+    @discord.ui.button(label="Report", emoji="👮", style=discord.ButtonStyle.danger, custom_id="panel_report")
+    async def report_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id in active_tickets:
+            return await interaction.response.send_message("You already have an open ticket!", ephemeral=True)
+
+        await interaction.response.send_modal(ReportModal())
+
+
+async def create_ticket_channel(guild: discord.Guild, user: discord.Member, ticket_type: str):
+    staff_role = guild.get_role(STAFF_ROLE_ID)
+    
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+    }
+    
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+    return await guild.create_text_channel(
+        name=f"{ticket_type}-{user.name}",
+        topic=str(user.id),
+        overwrites=overwrites
+    )
+
+
+@bot.tree.command(name="setup", description="Send the ticket panel message")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup(interaction: discord.Interaction):
+    embed = discord.Embed(
+        description=(
+            "**SUPPORT TICKETS**\n\n"
+            "Open a support ticket to report, trade or if you need help!\n\n"
+            "Staff will respond always!"
+        ),
+        color=discord.Color.from_rgb(138, 43, 226)
+    )
+    await interaction.response.send_message("Panel posted successfully!", ephemeral=True)
+    await interaction.channel.send(embed=embed, view=TicketPanelView())
+
+
+@bot.tree.command(name="add", description="Add a user to the current ticket")
+@app_commands.describe(member="The member to add to the ticket")
+async def add(interaction: discord.Interaction, member: discord.Member):
+    staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+    if staff_role not in interaction.user.roles and not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+
+    await interaction.channel.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
+    await interaction.response.send_message(f"Added {member.mention} to the ticket.")
+
+
+@bot.tree.command(name="remove", description="Remove a user from the current ticket")
+@app_commands.describe(member="The member to remove from the ticket")
+async def remove(interaction: discord.Interaction, member: discord.Member):
+    staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+    if staff_role not in interaction.user.roles and not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+
+    await interaction.channel.set_permissions(member, overwrite=None)
+    await interaction.response.send_message(f"Removed {member.mention} from the ticket.")
+
 
 if __name__ == "__main__":
     bot.run(TOKEN)
