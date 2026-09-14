@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 from datetime import datetime, timedelta, UTC
 from typing import Optional
+import io 
 
 import common
 from common import (
