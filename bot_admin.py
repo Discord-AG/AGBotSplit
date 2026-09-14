@@ -1195,8 +1195,6 @@ async def on_message(message: discord.Message):
     if message.author.bot: return
     if not message.guild: return
 
-    await _process_counting(message)
-
     if isinstance(message.author, discord.Member) and not message.author.bot:
         gid, uid = message.guild.id, message.author.id
         try:
