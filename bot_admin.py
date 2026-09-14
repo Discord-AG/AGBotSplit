@@ -1314,7 +1314,7 @@ async def on_ready():
     bot.tree.clear_commands(guild=None)
     await bot.tree.sync()
 
-    for task_fn in [auto_reset_loop, daily_gamble_loop,
+    for task_fn in [auto_reset_loop, 
                     lambda: msg_count_flush_loop(bot)]:
         bot.loop.create_task(task_fn())
 
