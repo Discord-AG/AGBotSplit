@@ -1301,7 +1301,6 @@ async def on_ready():
     await common._load_prefix()
     await load_disabled_commands()
     await load_prefix_restrictions()
-    bot.add_view(VerificationView())
     bot.add_view(AdminPanelView())
     bot.add_view(TicketPanelView())
     bot.add_view(CloseTicketView())
