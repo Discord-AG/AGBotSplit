@@ -1633,7 +1633,7 @@ trade_states = {}
 
 
 class TradeState:
-    def _init_(self, creator_id: int, target_id: int):
+    def __init__(self, creator_id: int, target_id: int):
         self.creator_id = creator_id
         self.target_id = target_id
         self.depositor_id = None
@@ -2002,7 +2002,7 @@ class TicketPanelView(discord.ui.View):
 async def setup(interaction: discord.Interaction):
     embed = discord.Embed(
         description=(
-            "*SUPPORT TICKETS*\n\n"
+            "**SUPPORT TICKETS**\n\n"
             "Open a support ticket to report, trade or if you need help!\n\n"
             "Staff will respond always!"
         ),
