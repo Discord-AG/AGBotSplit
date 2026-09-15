@@ -1303,6 +1303,8 @@ async def on_ready():
     bot.add_view(AdminPanelView())
     bot.add_view(TicketPanelView())
     bot.add_view(CloseTicketView())
+    bot.add_view(TradeInitialView())
+    bot.add_view(TradeActiveView())
 
     _guild = discord.Object(id=_GUILD_ID)
     bot.tree.copy_global_to(guild=_guild)
@@ -1625,13 +1627,20 @@ async def slash_resetrole(interaction: discord.Interaction,
 STAFF_ROLE_ID = 1541906011802050733
 TRANSCRIPT_CHANNEL_ID = 1540713749265256599
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
-intents.members = True
-
-
 active_tickets = set()
+
+trade_states = {}
+
+
+class TradeState:
+    def _init_(self, creator_id: int, target_id: int):
+        self.creator_id = creator_id
+        self.target_id = target_id
+        self.depositor_id = None
+        self.deposited_amount = 0
+        self.cancel_votes = set()
+        self.deposit_task = None
+        self.release_task = None
 
 
 async def generate_and_send_transcript(channel: discord.TextChannel, guild: discord.Guild):
@@ -1648,12 +1657,69 @@ async def generate_and_send_transcript(channel: discord.TextChannel, guild: disc
     transcript_channel = guild.get_channel(TRANSCRIPT_CHANNEL_ID)
     if transcript_channel:
         await transcript_channel.send(
-            content=f"Transcript for ticket **{channel.name}** (User ID: {channel.topic}):",
+            content=f"Transcript for ticket *{channel.name}* (User ID: {channel.topic}):",
             file=transcript_file
         )
 
 
-# --- MODAL FOR REPORT TICKET ---
+async def close_ticket_process(channel: discord.TextChannel, guild: discord.Guild, bot: commands.Bot):
+    state = trade_states.get(channel.id)
+    if state and state.depositor_id and state.deposited_amount > 0:
+        await add_balance(guild.id, state.depositor_id, state.deposited_amount, bot=bot)
+        await channel.send(f"Returned *{state.deposited_amount:,}* gems to <@{state.depositor_id}>.")
+
+    if state:
+        if state.deposit_task:
+            state.deposit_task.cancel()
+        if state.release_task:
+            state.release_task.cancel()
+        trade_states.pop(channel.id, None)
+
+    await generate_and_send_transcript(channel, guild)
+
+    if channel.topic and channel.topic.isdigit():
+        active_tickets.discard(int(channel.topic))
+
+    await channel.delete()
+
+
+async def start_deposit_timer(channel: discord.TextChannel, bot: commands.Bot):
+    await asyncio.sleep(300)
+    state = trade_states.get(channel.id)
+    if state and state.deposited_amount == 0:
+        await channel.send("No gems were deposited within 5 minutes. Closing ticket automatically...")
+        await close_ticket_process(channel, channel.guild, bot)
+
+
+async def start_release_timer(channel: discord.TextChannel, bot: commands.Bot):
+    await asyncio.sleep(600)
+    state = trade_states.get(channel.id)
+    if state and state.deposited_amount > 0:
+        await channel.send("Gems were not released within 10 minutes. Returning gems to depositor and closing ticket...")
+        await close_ticket_process(channel, channel.guild, bot)
+
+
+async def create_ticket_channel(guild: discord.Guild, user: discord.Member, ticket_type: str, extra_member: discord.Member = None):
+    staff_role = guild.get_role(STAFF_ROLE_ID)
+    
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+    }
+    
+    if extra_member:
+        overwrites[extra_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+    return await guild.create_text_channel(
+        name=f"{ticket_type}-{user.name}",
+        topic=str(user.id),
+        overwrites=overwrites
+    )
+
+
 class ReportModal(discord.ui.Modal, title="Report User"):
     reported_user_id = discord.ui.TextInput(
         label="Who are you willing to report (User ID)?",
@@ -1684,34 +1750,213 @@ class ReportModal(discord.ui.Modal, title="Report User"):
         await interaction.followup.send(f"Report ticket created: {channel.mention}", ephemeral=True)
 
 
+class TradeModal(discord.ui.Modal, title="Trade User"):
+    trader_user_id = discord.ui.TextInput(
+        label="Who are you willing to trade (User ID)?",
+        placeholder="Enter Discord User ID",
+        required=True,
+        style=discord.TextStyle.short
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        user = interaction.user
+        guild = interaction.guild
+
+        try:
+            target_id = int(self.trader_user_id.value)
+            target_member = await guild.fetch_member(target_id)
+        except Exception:
+            return await interaction.followup.send("Invalid User ID or user is not in this server.", ephemeral=True)
+
+        channel = await create_ticket_channel(guild, user, "trade", extra_member=target_member)
+        active_tickets.add(user.id)
+
+        state = TradeState(user.id, target_id)
+        trade_states[channel.id] = state
+
+        ping_msg = await channel.send(f"<@{user.id}> <@{target_id}>")
+        await ping_msg.delete()
+
+        embed = discord.Embed(
+            title="🛡️ Secure Trade Started",
+            description=(
+                "Gems must be deposited by the buyer. They can be deposited by clicking the button below. "
+                "Once a deposit is made, the trade can *continue safely*\n\n"
+                "Provides *100% Protection* 💯"
+            ),
+            color=discord.Color.blue()
+        )
+        await channel.send(embed=embed, view=TradeInitialView())
+        await interaction.followup.send(f"Trade ticket created: {channel.mention}", ephemeral=True)
+
+        state.deposit_task = asyncio.create_task(start_deposit_timer(channel, interaction.client))
+
+
+class DepositAmountModal(discord.ui.Modal, title="Deposit Gems"):
+    amount_input = discord.ui.TextInput(
+        label="Amount of Gems to Deposit",
+        placeholder="Enter amount",
+        required=True,
+        style=discord.TextStyle.short
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        user = interaction.user
+        channel = interaction.channel
+        state = trade_states.get(channel.id)
+
+        if not state:
+            return await interaction.followup.send("Trade state error.", ephemeral=True)
+
+        try:
+            amount = int(self.amount_input.value)
+            if amount <= 0:
+                raise ValueError()
+        except ValueError:
+            return await interaction.followup.send("Please enter a valid positive integer.", ephemeral=True)
+
+        user_balance = await get_balance(guild.id, user.id)
+        if user_balance < amount:
+            return await interaction.followup.send(f"You don't have enough gems!", ephemeral=True)
+
+        await add_balance(guild.id, user.id, -amount, bot=interaction.client)
+
+        state.depositor_id = user.id
+        state.deposited_amount = amount
+
+        if state.deposit_task:
+            state.deposit_task.cancel()
+
+        embed = discord.Embed(
+            title="🛡️ Trade Deposit Active",
+            description=(
+                f"*{user.mention}* has deposited *{amount:,} gems*!\n\n"
+                "Click *Release Balance* to give the gems to the other user, or *Escalate* if you need staff support."
+            ),
+            color=discord.Color.purple()
+        )
+        await channel.send(embed=embed, view=TradeActiveView())
+        await interaction.followup.send(f"Successfully deposited {amount:,} gems!", ephemeral=True)
+
+        state.release_task = asyncio.create_task(start_release_timer(channel, interaction.client))
+
+
 class CloseTicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+    def _init_(self):
+        super()._init_(timeout=None)
 
     @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         channel = interaction.channel
         staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
-        
+
         is_staff = staff_role in interaction.user.roles if staff_role else False
         is_owner = str(interaction.user.id) == channel.topic
 
         if not is_staff and not is_owner:
             return await interaction.response.send_message("Only staff or the ticket creator can close this ticket.", ephemeral=True)
 
-        await interaction.response.send_message("Closing ticket and sending transcript...")
+        await interaction.response.send_message("Closing ticket...")
+        await close_ticket_process(channel, interaction.guild, interaction.client)
 
-        await generate_and_send_transcript(channel, interaction.guild)
 
-        if channel.topic and channel.topic.isdigit():
-            active_tickets.discard(int(channel.topic))
+class TradeInitialView(discord.ui.View):
+    def _init_(self):
+        super()._init_(timeout=None)
 
-        await channel.delete()
+    @discord.ui.button(label="Deposit", emoji="💎", style=discord.ButtonStyle.primary, custom_id="trade_deposit")
+    async def deposit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        state = trade_states.get(channel.id)
+
+        if not state:
+            return await interaction.response.send_message("Trade session lost.", ephemeral=True)
+
+        if interaction.user.id not in [state.creator_id, state.target_id]:
+            return await interaction.response.send_message("You are not part of this trade.", ephemeral=True)
+
+        if state.depositor_id is not None:
+            return await interaction.response.send_message("Gems have already been deposited!", ephemeral=True)
+
+        await interaction.response.send_modal(DepositAmountModal())
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, custom_id="trade_cancel_initial")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        state = trade_states.get(channel.id)
+
+        if not state:
+            return await interaction.response.send_message("Trade session lost.", ephemeral=True)
+
+        if interaction.user.id not in [state.creator_id, state.target_id]:
+            return await interaction.response.send_message("Only trade participants can cancel.", ephemeral=True)
+
+        await interaction.response.send_message("Trade cancelled. Closing ticket...")
+        await close_ticket_process(channel, interaction.guild, interaction.client)
+
+
+class TradeActiveView(discord.ui.View):
+    def _init_(self):
+        super()._init_(timeout=None)
+
+    @discord.ui.button(label="Release Balance", emoji="🔓", style=discord.ButtonStyle.success, custom_id="trade_release")
+    async def release(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        state = trade_states.get(channel.id)
+
+        if not state or state.deposited_amount == 0:
+            return await interaction.response.send_message("No gems available to release.", ephemeral=True)
+
+        if interaction.user.id != state.depositor_id:
+            return await interaction.response.send_message("Only the depositor can release the balance!", ephemeral=True)
+
+        receiver_id = state.target_id if state.depositor_id == state.creator_id else state.creator_id
+
+        await add_balance(interaction.guild.id, receiver_id, state.deposited_amount, bot=interaction.client)
+
+        await interaction.response.send_message(
+            f"Released *{state.deposited_amount:,} gems* to <@{receiver_id}>! Trade completed successfully. Closing ticket..."
+        )
+        
+        state.deposited_amount = 0
+        await close_ticket_process(channel, interaction.guild, interaction.client)
+
+    @discord.ui.button(label="Escalate", emoji="⚠️", style=discord.ButtonStyle.warning, custom_id="trade_escalate")
+    async def escalate(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        state = trade_states.get(channel.id)
+
+        if not state or interaction.user.id not in [state.creator_id, state.target_id]:
+            return await interaction.response.send_message("Only trade participants can escalate.", ephemeral=True)
+
+        await channel.send(f"<@&{STAFF_ROLE_ID}> Trade escalated by {interaction.user.mention}! Staff assist needed.")
+        await interaction.response.send_message("Staff have been notified.", ephemeral=True)
+
+    @discord.ui.button(label="Cancel Trade", style=discord.ButtonStyle.danger, custom_id="trade_cancel_active")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        state = trade_states.get(channel.id)
+
+        if not state or interaction.user.id not in [state.creator_id, state.target_id]:
+            return await interaction.response.send_message("Only trade participants can cancel.", ephemeral=True)
+
+        state.cancel_votes.add(interaction.user.id)
+
+        if len(state.cancel_votes) >= 2:
+            await interaction.response.send_message("Both parties agreed to cancel the trade. Returning gems and closing ticket...")
+            await close_ticket_process(channel, interaction.guild, interaction.client)
+        else:
+            await interaction.response.send_message(
+                f"{interaction.user.mention} voted to cancel the trade. Waiting for the second party to click Cancel Trade."
+            )
 
 
 class TicketPanelView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+    def _init_(self):
+        super()._init_(timeout=None)
 
     @discord.ui.button(label="Help", emoji="📩", style=discord.ButtonStyle.success, custom_id="panel_help")
     async def help_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1738,7 +1983,10 @@ class TicketPanelView(discord.ui.View):
 
     @discord.ui.button(label="Trade", emoji="🛡️", style=discord.ButtonStyle.primary, custom_id="panel_trade")
     async def trade_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Trade ticket system pending your instructions!", ephemeral=True)
+        if interaction.user.id in active_tickets:
+            return await interaction.response.send_message("You already have an open ticket!", ephemeral=True)
+
+        await interaction.response.send_modal(TradeModal())
 
     @discord.ui.button(label="Report", emoji="👮", style=discord.ButtonStyle.danger, custom_id="panel_report")
     async def report_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1748,30 +1996,13 @@ class TicketPanelView(discord.ui.View):
         await interaction.response.send_modal(ReportModal())
 
 
-async def create_ticket_channel(guild: discord.Guild, user: discord.Member, ticket_type: str):
-    staff_role = guild.get_role(STAFF_ROLE_ID)
-    
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-    }
-    
-    if staff_role:
-        overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-    return await guild.create_text_channel(
-        name=f"{ticket_type}-{user.name}",
-        topic=str(user.id),
-        overwrites=overwrites
-    )
-
-
-@bot.tree.command(name="setup", description="Send the ticket panel message")
+@app_commands.command(name="setup", description="Post the ticket creation panel")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup(interaction: discord.Interaction):
     embed = discord.Embed(
         description=(
-            "**SUPPORT TICKETS**\n\n"
+            "*SUPPORT TICKETS*\n\n"
             "Open a support ticket to report, trade or if you need help!\n\n"
             "Staff will respond always!"
         ),
@@ -1781,7 +2012,7 @@ async def setup(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed, view=TicketPanelView())
 
 
-@bot.tree.command(name="add", description="Add a user to the current ticket")
+@app_commands.command(name="add", description="Add a user to the current ticket channel")
 @app_commands.describe(member="The member to add to the ticket")
 async def add(interaction: discord.Interaction, member: discord.Member):
     staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
@@ -1792,7 +2023,7 @@ async def add(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message(f"Added {member.mention} to the ticket.")
 
 
-@bot.tree.command(name="remove", description="Remove a user from the current ticket")
+@app_commands.command(name="remove", description="Remove a user from the current ticket channel")
 @app_commands.describe(member="The member to remove from the ticket")
 async def remove(interaction: discord.Interaction, member: discord.Member):
     staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
@@ -1801,6 +2032,26 @@ async def remove(interaction: discord.Interaction, member: discord.Member):
 
     await interaction.channel.set_permissions(member, overwrite=None)
     await interaction.response.send_message(f"Removed {member.mention} from the ticket.")
+
+
+@app_commands.command(name="close", description="Close the current ticket")
+async def close(interaction: discord.Interaction):
+    channel = interaction.channel
+    staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+
+    is_staff = staff_role in interaction.user.roles if staff_role else False
+    is_owner = str(interaction.user.id) == channel.topic
+
+    if not is_staff and not is_owner:
+        return await interaction.response.send_message("Only staff or the ticket creator can close this ticket.", ephemeral=True)
+
+    await interaction.response.send_message("Closing ticket...")
+    await close_ticket_process(channel, interaction.guild, interaction.client)
+
+bot.tree.add_command(setup)
+bot.tree.add_command(add)
+bot.tree.add_command(remove)
+bot.tree.add_command(close)
 
 
 if __name__ == "__main__":
