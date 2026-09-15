@@ -1924,7 +1924,7 @@ class TradeActiveView(discord.ui.View):
         state.deposited_amount = 0
         await close_ticket_process(channel, interaction.guild, interaction.client)
 
-    @discord.ui.button(label="Escalate", emoji="⚠️", style=discord.ButtonStyle.warning, custom_id="trade_escalate")
+    @discord.ui.button(label="Escalate", emoji="⚠️", style=discord.ButtonStyle.danger, custom_id="trade_escalate")
     async def escalate(self, interaction: discord.Interaction, button: discord.ui.Button):
         channel = interaction.channel
         state = trade_states.get(channel.id)
