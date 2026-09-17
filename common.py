@@ -247,6 +247,30 @@ async def setup_database():
             await db.execute("""CREATE TABLE IF NOT EXISTS auto_reset_pending(
                 guild_id INTEGER, user_id INTEGER, reset_type TEXT, reset_after INTEGER,
                 PRIMARY KEY(guild_id, user_id, reset_type))""")
+            # ── Host leaderboard ─────────────────────────────────────
+            await db.execute("""CREATE TABLE IF NOT EXISTS host_history(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER, user_id INTEGER,
+                amount INTEGER, timestamp INTEGER)""")
+            await db.execute("""CREATE INDEX IF NOT EXISTS idx_host_history_lookup
+                ON host_history(guild_id, timestamp)""")
+            await db.execute("""CREATE TABLE IF NOT EXISTS host_role_config(
+                guild_id INTEGER PRIMARY KEY,
+                role_id INTEGER DEFAULT 0,
+                top_count INTEGER DEFAULT 0,
+                extra_entries INTEGER DEFAULT 0)""")
+
+            # ── Exchange system ──────────────────────────────────────
+            await db.execute("""CREATE TABLE IF NOT EXISTS exchange_config(
+                guild_id INTEGER PRIMARY KEY,
+                coins_to_exp_rate REAL DEFAULT 1.0,
+                exp_to_coins_rate REAL DEFAULT 1.0,
+                ticket_category_id INTEGER DEFAULT 0,
+                enabled INTEGER DEFAULT 1)""")
+            await db.execute("""CREATE TABLE IF NOT EXISTS exchange_prizes(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER, name TEXT, cost INTEGER,
+                description TEXT, stock INTEGER DEFAULT -1)""")
  
             await db.commit()
  
@@ -1062,3 +1086,118 @@ def paginate_lines(lines: list[str], title: str, color: discord.Color,
     for i, embed in enumerate(pages):
         embed.set_footer(text=f"Page {i+1}/{total}")
     return pages if pages else [discord.Embed(title=title, description="No entries.", color=color)]
+
+async def record_host_event(guild_id: int, user_id: int, amount: int):
+    """Log a /host giveaway so the WEEKLY host leaderboard can be computed.
+    The all-time total is still tracked separately via user_stats.hosted_balance."""
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO host_history(guild_id,user_id,amount,timestamp) VALUES(?,?,?,?)",
+                (guild_id, user_id, amount, int(datetime.now(UTC).timestamp())))
+            await db.commit()
+
+
+async def get_host_leaderboard(guild_id: int, weekly: bool = False) -> list[tuple[int, int]]:
+    """Return [(user_id, total_hosted), ...] sorted descending.
+    weekly=True  → only the last 7 days (from host_history)
+    weekly=False → all-time (from user_stats.hosted_balance)"""
+    async with get_db() as db:
+        if weekly:
+            week_ago = int((datetime.now(UTC) - timedelta(days=7)).timestamp())
+            async with db.execute(
+                "SELECT user_id, SUM(amount) FROM host_history "
+                "WHERE guild_id=? AND timestamp>=? GROUP BY user_id "
+                "HAVING SUM(amount)>0 ORDER BY SUM(amount) DESC",
+                (guild_id, week_ago)) as cur:
+                return [(uid, int(amt)) for uid, amt in await cur.fetchall()]
+        else:
+            async with db.execute(
+                "SELECT user_id, hosted_balance FROM user_stats "
+                "WHERE guild_id=? AND hosted_balance>0 ORDER BY hosted_balance DESC",
+                (guild_id,)) as cur:
+                return list(await cur.fetchall())
+
+
+async def get_host_role_config(guild_id: int) -> tuple[int, int, int] | None:
+    """Returns (role_id, top_count, extra_entries) or None if not configured."""
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT role_id, top_count, extra_entries FROM host_role_config WHERE guild_id=?",
+            (guild_id,)) as cur:
+            row = await cur.fetchone()
+    if not row or not row[0]:
+        return None
+    return row
+
+
+async def get_host_bonus_entries(guild_id: int, member) -> int:
+    """Extra giveaway entries this member gets for holding the host role.
+    Returns 0 if no host role configured or the member doesn't have it."""
+    cfg = await get_host_role_config(guild_id)
+    if not cfg:
+        return 0
+    role_id, _top_count, extra_entries = cfg
+    if any(r.id == role_id for r in getattr(member, "roles", [])):
+        return max(0, extra_entries)
+    return 0
+
+
+async def sync_host_roles(bot, guild_id: int) -> tuple[int, int]:
+    """Give the host role to the top N of EITHER leaderboard (union of both),
+    and strip it from everyone else who holds it.
+    Returns (added_count, removed_count)."""
+    cfg = await get_host_role_config(guild_id)
+    if not cfg:
+        return (0, 0)
+    role_id, top_count, _extra = cfg
+    if top_count <= 0:
+        return (0, 0)
+
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return (0, 0)
+    role = guild.get_role(role_id)
+    if not role:
+        return (0, 0)
+
+    weekly   = await get_host_leaderboard(guild_id, weekly=True)
+    alltime  = await get_host_leaderboard(guild_id, weekly=False)
+    should_have = {uid for uid, _ in weekly[:top_count]} | {uid for uid, _ in alltime[:top_count]}
+
+    added = removed = 0
+    for member in guild.members:
+        if member.bot:
+            continue
+        has_role = role in member.roles
+        if member.id in should_have and not has_role:
+            try:
+                await member.add_roles(role, reason="Host leaderboard top placement")
+                added += 1
+            except Exception as e:
+                print(f"[HostRole] add failed for {member}: {e}")
+        elif member.id not in should_have and has_role:
+            try:
+                await member.remove_roles(role, reason="Dropped out of host leaderboard top")
+                removed += 1
+            except Exception as e:
+                print(f"[HostRole] remove failed for {member}: {e}")
+    return (added, removed)
+
+
+async def get_exchange_config(guild_id: int) -> tuple[float, float, int, int]:
+    """Returns (coins_to_exp_rate, exp_to_coins_rate, ticket_category_id, enabled).
+    Creates a default row if none exists."""
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT coins_to_exp_rate, exp_to_coins_rate, ticket_category_id, enabled "
+            "FROM exchange_config WHERE guild_id=?", (guild_id,)) as cur:
+            row = await cur.fetchone()
+    if row:
+        return row
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO exchange_config(guild_id) VALUES(?)", (guild_id,))
+            await db.commit()
+    return (1.0, 1.0, 0, 1)
