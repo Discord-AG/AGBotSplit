@@ -20,6 +20,8 @@ from common import (
     disabled_commands, global_disabled_commands, load_disabled_commands,
     prefix_channel_rules, _prefix_channel_allowed, load_prefix_restrictions, set_prefix,
     register_bot_instance, parse_amount, EmbedPaginator, paginate_lines,
+    record_host_event, get_host_leaderboard, get_host_role_config,
+    get_host_bonus_entries, sync_host_roles, get_exchange_config,
 )
 
 TOKEN = os.getenv("TOKEN_ADMIN")
@@ -1316,7 +1318,7 @@ async def on_ready():
     bot.tree.clear_commands(guild=None)
     await bot.tree.sync()
 
-    for task_fn in [auto_reset_loop, 
+    for task_fn in [auto_reset_loop, host_role_loop,
                     lambda: msg_count_flush_loop(bot)]:
         bot.loop.create_task(task_fn())
 
@@ -1845,8 +1847,8 @@ class DepositAmountModal(discord.ui.Modal, title="Deposit Gems"):
 
 
 class CloseTicketView(discord.ui.View):
-    def _init_(self):
-        super()._init_(timeout=None)
+    def __init__(self):
+        super().__init__(timeout=None)
 
     @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1864,8 +1866,8 @@ class CloseTicketView(discord.ui.View):
 
 
 class TradeInitialView(discord.ui.View):
-    def _init_(self):
-        super()._init_(timeout=None)
+    def __init__(self):
+        super().__init__(timeout=None)
 
     @discord.ui.button(label="Deposit", emoji="💎", style=discord.ButtonStyle.primary, custom_id="trade_deposit")
     async def deposit(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1899,8 +1901,8 @@ class TradeInitialView(discord.ui.View):
 
 
 class TradeActiveView(discord.ui.View):
-    def _init_(self):
-        super()._init_(timeout=None)
+    def __init__(self):
+        super().__init__(timeout=None)
 
     @discord.ui.button(label="Release Balance", emoji="🔓", style=discord.ButtonStyle.success, custom_id="trade_release")
     async def release(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1955,8 +1957,8 @@ class TradeActiveView(discord.ui.View):
 
 
 class TicketPanelView(discord.ui.View):
-    def _init_(self):
-        super()._init_(timeout=None)
+    def __init__(self):
+        super().__init__(timeout=None)
 
     @discord.ui.button(label="Help", emoji="📩", style=discord.ButtonStyle.success, custom_id="panel_help")
     async def help_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2052,6 +2054,653 @@ bot.tree.add_command(setup)
 bot.tree.add_command(add)
 bot.tree.add_command(remove)
 bot.tree.add_command(close)
+
+
+# ═══════════════════════════════════════════════════════
+# HOST LEADERBOARD  (weekly + all-time) & HOST ROLE
+# ═══════════════════════════════════════════════════════
+
+@bot.tree.command(name="hostleaderboard",
+                  description="View the giveaway host leaderboard (weekly or all-time)")
+@app_commands.describe(board="Which leaderboard to show")
+@app_commands.choices(board=[
+    app_commands.Choice(name="Weekly (last 7 days)", value="weekly"),
+    app_commands.Choice(name="All-time",             value="alltime"),
+])
+@command_enabled()
+async def hostleaderboard(interaction: discord.Interaction, board: str = "weekly"):
+    await interaction.response.defer()
+    gid     = interaction.guild.id
+    weekly  = (board == "weekly")
+    data    = await get_host_leaderboard(gid, weekly=weekly)
+
+    if not data:
+        scope = "this week" if weekly else "all time"
+        await interaction.followup.send(f"❌ Nobody has hosted a giveaway {scope} yet."); return
+
+    cfg       = await get_host_role_config(gid)
+    top_count = cfg[1] if cfg else 0
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines  = []
+    for i, (uid, amt) in enumerate(data):
+        rank   = i + 1
+        member = interaction.guild.get_member(uid)
+        name   = member.display_name if member else "*[Left Server]*"
+        star   = " ★" if uid == interaction.user.id else ""
+        prefix = medals[rank - 1] if rank <= 3 else f"**#{rank}**"
+        crown  = " 👑" if (top_count and rank <= top_count) else ""
+        lines.append(f"{prefix} {name}{star}{crown} — {amt:,} coins")
+
+    title = ("🎁 Weekly Host Leaderboard" if weekly else "🎁 All-Time Host Leaderboard")
+    pages = paginate_lines(lines, title, discord.Color.purple(), per_page=10)
+
+    # Footer: caller's own rank + host role info
+    caller_rank = next((i + 1 for i, (uid, _) in enumerate(data) if uid == interaction.user.id), None)
+    caller_amt  = next((amt for uid, amt in data if uid == interaction.user.id), 0)
+    total_pages = len(pages)
+    for i, embed in enumerate(pages):
+        foot = f"Page {i+1}/{total_pages} · {len(data)} host(s)"
+        if caller_rank:
+            foot += f" · Your rank: #{caller_rank} ({caller_amt:,})"
+        if top_count:
+            foot += f" · 👑 = top {top_count} gets the host role"
+        embed.set_footer(text=foot)
+
+    view = EmbedPaginator(pages, interaction.user.id) if total_pages > 1 else None
+    await interaction.followup.send(embed=pages[0], view=view)
+
+
+@bot.command(name="hostleaderboard")
+async def pfx_hostleaderboard(ctx, board: str = "weekly"):
+    if board not in ("weekly", "alltime"):
+        await ctx.send("❌ Use `weekly` or `alltime`."); return
+    await hostleaderboard._callback(FakeInteraction(ctx), board)
+
+
+@bot.tree.command(name="sethostrole",
+                  description="Set the role given to top hosts, and how many bonus giveaway entries it grants")
+@app_commands.describe(
+    role="Role to give to the top hosts",
+    top_count="How many top hosts get it — applied to BOTH the weekly and all-time boards",
+    extra_entries="Bonus giveaway entries this role grants")
+@command_enabled()
+async def sethostrole(interaction: discord.Interaction, role: discord.Role,
+                      top_count: int, extra_entries: int):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    if top_count < 1:
+        await interaction.response.send_message("❌ top_count must be ≥ 1.", ephemeral=True); return
+    if extra_entries < 0:
+        await interaction.response.send_message("❌ extra_entries must be ≥ 0.", ephemeral=True); return
+
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO host_role_config(guild_id,role_id,top_count,extra_entries) "
+                "VALUES(?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET "
+                "role_id=excluded.role_id, top_count=excluded.top_count, "
+                "extra_entries=excluded.extra_entries",
+                (interaction.guild.id, role.id, top_count, extra_entries))
+            await db.commit()
+
+    warnings = []
+    me = interaction.guild.me
+    if not me.guild_permissions.manage_roles:
+        warnings.append("⚠️ I'm missing the **Manage Roles** permission — I can't assign this role.")
+    elif me.top_role <= role:
+        warnings.append(
+            f"⚠️ My highest role ({me.top_role.mention}) is below or equal to {role.mention} — "
+            f"move my role above it in Server Settings → Roles.")
+
+    await interaction.response.defer()
+    added, removed = await sync_host_roles(bot, interaction.guild.id)
+
+    msg = (f"✅ {role.mention} will be given to the **top {top_count}** of the weekly "
+           f"leaderboard **and** the top {top_count} of the all-time leaderboard.\n"
+           f"It grants **+{extra_entries}** bonus giveaway entries.\n"
+           f"🔄 Synced now: **{added}** added, **{removed}** removed.")
+    if warnings:
+        msg += "\n" + "\n".join(warnings)
+    await interaction.followup.send(msg)
+
+
+@bot.command(name="sethostrole")
+async def pfx_sethostrole(ctx, role: discord.Role, top_count: int, extra_entries: int):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    await sethostrole._callback(FakeInteraction(ctx), role, top_count, extra_entries)
+
+
+@bot.tree.command(name="removehostrole",
+                  description="Stop giving a host role to top hosts")
+@command_enabled()
+async def removehostrole(interaction: discord.Interaction):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute("DELETE FROM host_role_config WHERE guild_id=?",
+                             (interaction.guild.id,))
+            await db.commit()
+    await interaction.response.send_message(
+        "🗑 Host role config removed. Members who currently have the role keep it "
+        "until you remove it manually.")
+
+
+@bot.command(name="removehostrole")
+async def pfx_removehostrole(ctx):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    await removehostrole._callback(FakeInteraction(ctx))
+
+
+@bot.tree.command(name="hostroleinfo",
+                  description="Show the current host role configuration")
+@command_enabled()
+async def hostroleinfo(interaction: discord.Interaction):
+    cfg = await get_host_role_config(interaction.guild.id)
+    if not cfg:
+        await interaction.response.send_message(
+            "❌ No host role configured. Use `/sethostrole`.", ephemeral=True); return
+    role_id, top_count, extra_entries = cfg
+    role = interaction.guild.get_role(role_id)
+    holders = len(role.members) if role else 0
+    embed = discord.Embed(title="👑 Host Role Configuration", color=discord.Color.purple())
+    embed.add_field(name="Role", value=role.mention if role else f"<deleted {role_id}>", inline=True)
+    embed.add_field(name="Top Count", value=f"{top_count} (per board)", inline=True)
+    embed.add_field(name="Bonus Entries", value=f"+{extra_entries}", inline=True)
+    embed.add_field(name="Current Holders", value=str(holders), inline=True)
+    embed.set_footer(text="Given to the top N of the weekly board AND the top N of the all-time board")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.command(name="hostroleinfo")
+async def pfx_hostroleinfo(ctx):
+    await hostroleinfo._callback(FakeInteraction(ctx))
+
+
+@bot.tree.command(name="refreshhostroles",
+                  description="Manually re-sync the host role against the leaderboards")
+@command_enabled()
+async def refreshhostroles(interaction: discord.Interaction):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    cfg = await get_host_role_config(interaction.guild.id)
+    if not cfg:
+        await interaction.response.send_message(
+            "❌ No host role configured. Use `/sethostrole` first.", ephemeral=True); return
+    await interaction.response.defer()
+    added, removed = await sync_host_roles(bot, interaction.guild.id)
+    await interaction.followup.send(
+        f"🔄 Host roles synced — **{added}** added, **{removed}** removed.")
+
+
+@bot.command(name="refreshhostroles")
+async def pfx_refreshhostroles(ctx):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    await refreshhostroles._callback(FakeInteraction(ctx))
+
+
+async def host_role_loop():
+    """Re-sync host roles every 10 minutes so the weekly board stays accurate."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            for guild in bot.guilds:
+                cfg = await get_host_role_config(guild.id)
+                if not cfg:
+                    continue
+                added, removed = await sync_host_roles(bot, guild.id)
+                if added or removed:
+                    await log_event(guild.id, "admin", _log_embed(
+                        "👑 Host Roles Synced", discord.Color.purple(),
+                        Added=str(added), Removed=str(removed)))
+        except Exception as e:
+            print(f"[HostRoleLoop] {e}")
+        await asyncio.sleep(600)
+
+
+# ═══════════════════════════════════════════════════════
+# EXCHANGE SYSTEM
+# ═══════════════════════════════════════════════════════
+
+async def _create_exchange_ticket(guild: discord.Guild, user: discord.Member,
+                                  prize_name: str, cost: int) -> discord.TextChannel | None:
+    """Open a claim ticket in the configured exchange category."""
+    _c2e, _e2c, category_id, _enabled = await get_exchange_config(guild.id)
+    category = guild.get_channel(category_id) if category_id else None
+    if category is not None and not isinstance(category, discord.CategoryChannel):
+        category = None
+
+    staff_role = guild.get_role(STAFF_ROLE_ID)
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        user: discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                          read_message_history=True),
+    }
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True)
+
+    try:
+        return await guild.create_text_channel(
+            name=f"claim-{user.name}",
+            topic=str(user.id),
+            category=category,
+            overwrites=overwrites)
+    except Exception as e:
+        print(f"[Exchange] ticket creation failed: {e}")
+        return None
+
+
+exchange_group = app_commands.Group(name="exchange",
+                                    description="Exchange coins, EXP, and special prizes")
+bot.tree.add_command(exchange_group)
+
+
+@exchange_group.command(name="rates", description="View the current exchange rates and prizes")
+async def exchange_rates(interaction: discord.Interaction):
+    gid = interaction.guild.id
+    c2e, e2c, category_id, enabled = await get_exchange_config(gid)
+    if not enabled:
+        await interaction.response.send_message("🔒 The exchange system is currently disabled.",
+                                                ephemeral=True); return
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT id,name,cost,description,stock FROM exchange_prizes "
+            "WHERE guild_id=? ORDER BY cost ASC", (gid,)) as cur:
+            prizes = await cur.fetchall()
+
+    embed = discord.Embed(title="💱 Exchange Rates", color=discord.Color.teal())
+    embed.add_field(name="💰 → ⭐ Coins to EXP",
+                    value=f"1 coin = **{c2e:g}** EXP", inline=True)
+    embed.add_field(name="⭐ → 💰 EXP to Coins",
+                    value=f"1 EXP = **{e2c:g}** coins", inline=True)
+    if prizes:
+        lines = []
+        for pid, name, cost, desc, stock in prizes:
+            stock_str = "" if stock < 0 else (f" · **{stock}** left" if stock > 0 else " · **OUT OF STOCK**")
+            lines.append(f"`#{pid}` **{name}** — 💰 {cost:,} coins{stock_str}"
+                         + (f"\n    *{desc}*" if desc else ""))
+        embed.add_field(name="🎁 Special Prizes", value="\n".join(lines)[:1024], inline=False)
+    else:
+        embed.add_field(name="🎁 Special Prizes", value="*None configured yet*", inline=False)
+    embed.set_footer(text="/exchange coins-to-exp · /exchange exp-to-coins · /exchange prize")
+    await interaction.response.send_message(embed=embed)
+
+
+@exchange_group.command(name="coins-to-exp", description="Exchange your coins for EXP")
+@app_commands.describe(amount="Coins to spend — supports 1k, 1m, 1b, etc.")
+async def exchange_coins_to_exp(interaction: discord.Interaction, amount: str):
+    gid, uid = interaction.guild.id, interaction.user.id
+    c2e, _e2c, _cat, enabled = await get_exchange_config(gid)
+    if not enabled:
+        await interaction.response.send_message("🔒 The exchange system is disabled.",
+                                                ephemeral=True); return
+    parsed = parse_amount(amount)
+    if parsed is None or parsed <= 0:
+        await interaction.response.send_message("❌ Invalid amount.", ephemeral=True); return
+
+    bal = await get_balance(gid, uid)
+    if bal < parsed:
+        await interaction.response.send_message(
+            f"❌ You need **{parsed:,}** coins but only have **{bal:,}**.", ephemeral=True); return
+
+    exp_gained = int(parsed * c2e)
+    if exp_gained < 1:
+        await interaction.response.send_message(
+            f"❌ That would give **0** EXP at the current rate (1 coin = {c2e:g} EXP). "
+            f"Try a larger amount.", ephemeral=True); return
+
+    await add_balance(gid, uid, -parsed, bot=bot)
+    await add_exp(gid, uid, exp_gained, is_bonus=True)
+
+    embed = discord.Embed(title="💱 Exchange Complete", color=discord.Color.green(),
+        description=f"💰 **-{parsed:,}** coins\n⭐ **+{exp_gained:,}** EXP")
+    embed.set_footer(text=f"Rate: 1 coin = {c2e:g} EXP")
+    await interaction.response.send_message(embed=embed)
+    await log_event(gid, "balance", _log_embed(
+        "💱 Coins → EXP", discord.Color.teal(),
+        User=interaction.user.mention, Spent=f"{parsed:,} coins", Received=f"{exp_gained:,} EXP"))
+
+
+@exchange_group.command(name="exp-to-coins", description="Exchange your EXP for coins")
+@app_commands.describe(amount="EXP to spend — supports 1k, 1m, 1b, etc.")
+async def exchange_exp_to_coins(interaction: discord.Interaction, amount: str):
+    gid, uid = interaction.guild.id, interaction.user.id
+    _c2e, e2c, _cat, enabled = await get_exchange_config(gid)
+    if not enabled:
+        await interaction.response.send_message("🔒 The exchange system is disabled.",
+                                                ephemeral=True); return
+    parsed = parse_amount(amount)
+    if parsed is None or parsed <= 0:
+        await interaction.response.send_message("❌ Invalid amount.", ephemeral=True); return
+
+    exp = await get_exp(gid, uid)
+    if exp < parsed:
+        await interaction.response.send_message(
+            f"❌ You need **{parsed:,}** usable EXP but only have **{exp:,}**.",
+            ephemeral=True); return
+
+    coins_gained = int(parsed * e2c)
+    if coins_gained < 1:
+        await interaction.response.send_message(
+            f"❌ That would give **0** coins at the current rate (1 EXP = {e2c:g} coins). "
+            f"Try a larger amount.", ephemeral=True); return
+
+    await add_exp(gid, uid, -parsed)
+    await add_balance(gid, uid, coins_gained, bot=bot)
+
+    embed = discord.Embed(title="💱 Exchange Complete", color=discord.Color.green(),
+        description=f"⭐ **-{parsed:,}** EXP\n💰 **+{coins_gained:,}** coins")
+    embed.set_footer(text=f"Rate: 1 EXP = {e2c:g} coins")
+    await interaction.response.send_message(embed=embed)
+    await log_event(gid, "balance", _log_embed(
+        "💱 EXP → Coins", discord.Color.teal(),
+        User=interaction.user.mention, Spent=f"{parsed:,} EXP", Received=f"{coins_gained:,} coins"))
+
+
+@exchange_group.command(name="prize", description="Exchange coins for a special prize (opens a claim ticket)")
+@app_commands.describe(prize="Name or ID of the prize — see /exchange rates")
+async def exchange_prize(interaction: discord.Interaction, prize: str):
+    gid, uid = interaction.guild.id, interaction.user.id
+    _c2e, _e2c, category_id, enabled = await get_exchange_config(gid)
+    if not enabled:
+        await interaction.response.send_message("🔒 The exchange system is disabled.",
+                                                ephemeral=True); return
+
+    prize = prize.strip()
+    async with get_db() as db:
+        if prize.isdigit():
+            async with db.execute(
+                "SELECT id,name,cost,description,stock FROM exchange_prizes "
+                "WHERE guild_id=? AND id=?", (gid, int(prize))) as cur:
+                row = await cur.fetchone()
+        else:
+            async with db.execute(
+                "SELECT id,name,cost,description,stock FROM exchange_prizes "
+                "WHERE guild_id=? AND LOWER(name)=LOWER(?)", (gid, prize)) as cur:
+                row = await cur.fetchone()
+    if not row:
+        await interaction.response.send_message(
+            f"❌ Prize **{prize}** not found. Use `/exchange rates` to see what's available.",
+            ephemeral=True); return
+
+    pid, name, cost, desc, stock = row
+    if stock == 0:
+        await interaction.response.send_message(
+            f"❌ **{name}** is out of stock.", ephemeral=True); return
+
+    bal = await get_balance(gid, uid)
+    if bal < cost:
+        await interaction.response.send_message(
+            f"❌ **{name}** costs **{cost:,}** coins but you only have **{bal:,}**.",
+            ephemeral=True); return
+
+    if uid in active_tickets:
+        await interaction.response.send_message(
+            "❌ You already have an open ticket. Close it before claiming another prize.",
+            ephemeral=True); return
+
+    await interaction.response.defer(ephemeral=True)
+
+    channel = await _create_exchange_ticket(interaction.guild, interaction.user, name, cost)
+    if channel is None:
+        await interaction.followup.send(
+            "❌ Couldn't create your claim ticket — ask an admin to check the bot's "
+            "permissions and the configured exchange category.", ephemeral=True); return
+
+    # Only charge once the ticket actually exists
+    await add_balance(gid, uid, -cost, bot=bot)
+    active_tickets.add(uid)
+    if stock > 0:
+        async with db_lock:
+            async with get_db() as db:
+                await db.execute(
+                    "UPDATE exchange_prizes SET stock=stock-1 WHERE id=?", (pid,))
+                await db.commit()
+
+    ping = await channel.send(f"<@{uid}> <@&{STAFF_ROLE_ID}>")
+    await ping.delete()
+
+    embed = discord.Embed(title="🎁 Prize Claim", color=discord.Color.gold(),
+        description=(f"{interaction.user.mention} exchanged coins for a special prize.\n\n"
+                     f"**Prize:** {name}\n"
+                     f"**Cost:** 💰 {cost:,} coins *(already deducted)*"))
+    if desc:
+        embed.add_field(name="Details", value=desc, inline=False)
+    embed.set_footer(text="Staff will fulfil this claim shortly.")
+    await channel.send(embed=embed, view=CloseTicketView())
+
+    await interaction.followup.send(
+        f"✅ Claim ticket created: {channel.mention}\n"
+        f"💰 **{cost:,}** coins deducted for **{name}**.", ephemeral=True)
+    await log_event(gid, "balance", _log_embed(
+        "🎁 Prize Exchanged", discord.Color.gold(),
+        User=interaction.user.mention, Prize=name,
+        Cost=f"{cost:,} coins", Ticket=channel.mention))
+
+
+# ── Exchange admin commands ───────────────────────────────────────────────────
+
+@bot.tree.command(name="setexchangerate", description="Admin: set an exchange rate")
+@app_commands.describe(
+    direction="Which rate to change",
+    rate="The multiplier. e.g. 0.5 means 1 unit in = 0.5 units out")
+@app_commands.choices(direction=[
+    app_commands.Choice(name="Coins → EXP (1 coin = N EXP)",   value="coins_to_exp"),
+    app_commands.Choice(name="EXP → Coins (1 EXP = N coins)",  value="exp_to_coins"),
+])
+@command_enabled()
+async def setexchangerate(interaction: discord.Interaction, direction: str, rate: float):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    if rate <= 0:
+        await interaction.response.send_message("❌ Rate must be greater than 0.", ephemeral=True); return
+
+    column = "coins_to_exp_rate" if direction == "coins_to_exp" else "exp_to_coins_rate"
+    await get_exchange_config(interaction.guild.id)   # ensure row exists
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(f"UPDATE exchange_config SET {column}=? WHERE guild_id=?",
+                             (rate, interaction.guild.id))
+            await db.commit()
+
+    label = ("1 coin = **{:g}** EXP" if direction == "coins_to_exp"
+             else "1 EXP = **{:g}** coins").format(rate)
+    await interaction.response.send_message(f"✅ Exchange rate updated: {label}")
+
+
+@bot.command(name="setexchangerate")
+async def pfx_setexchangerate(ctx, direction: str, rate: float):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    if direction not in ("coins_to_exp", "exp_to_coins"):
+        await ctx.send("❌ Direction must be `coins_to_exp` or `exp_to_coins`."); return
+    await setexchangerate._callback(FakeInteraction(ctx), direction, rate)
+
+
+@bot.tree.command(name="setexchangecategory",
+                  description="Admin: set the category where prize claim tickets are created")
+@app_commands.describe(category="Category for exchange claim tickets")
+@command_enabled()
+async def setexchangecategory(interaction: discord.Interaction, category: discord.CategoryChannel):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    await get_exchange_config(interaction.guild.id)
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute("UPDATE exchange_config SET ticket_category_id=? WHERE guild_id=?",
+                             (category.id, interaction.guild.id))
+            await db.commit()
+    await interaction.response.send_message(
+        f"✅ Prize claim tickets will now be created in **{category.name}**.")
+
+
+@bot.command(name="setexchangecategory")
+async def pfx_setexchangecategory(ctx, category: discord.CategoryChannel):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    await setexchangecategory._callback(FakeInteraction(ctx), category)
+
+
+@bot.tree.command(name="addexchangeprize", description="Admin: add a special prize to the exchange")
+@app_commands.describe(
+    name="Prize name", cost="Cost in coins — supports 1k, 1m, etc.",
+    description="Optional details shown to users",
+    stock="How many are available (-1 = unlimited, the default)")
+@command_enabled()
+async def addexchangeprize(interaction: discord.Interaction, name: str, cost: str,
+                           description: str = None, stock: int = -1):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    parsed_cost = parse_amount(cost)
+    if parsed_cost is None or parsed_cost <= 0:
+        await interaction.response.send_message("❌ Invalid cost.", ephemeral=True); return
+
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT id FROM exchange_prizes WHERE guild_id=? AND LOWER(name)=LOWER(?)",
+            (interaction.guild.id, name)) as cur:
+            if await cur.fetchone():
+                await interaction.response.send_message(
+                    f"❌ A prize named **{name}** already exists.", ephemeral=True); return
+
+    async with db_lock:
+        async with get_db() as db:
+            cur = await db.execute(
+                "INSERT INTO exchange_prizes(guild_id,name,cost,description,stock) VALUES(?,?,?,?,?)",
+                (interaction.guild.id, name, parsed_cost, description, stock))
+            new_id = cur.lastrowid
+            await db.commit()
+
+    stock_str = "unlimited" if stock < 0 else str(stock)
+    await interaction.response.send_message(
+        f"✅ Added prize `#{new_id}` **{name}** — 💰 {parsed_cost:,} coins | Stock: {stock_str}")
+
+
+@bot.command(name="addexchangeprize")
+async def pfx_addexchangeprize(ctx, name: str, cost: str, *, description: str = None):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    await addexchangeprize._callback(FakeInteraction(ctx), name, cost, description, -1)
+
+
+@bot.tree.command(name="removeexchangeprize", description="Admin: remove a special prize from the exchange")
+@app_commands.describe(prize="Prize name or ID")
+@command_enabled()
+async def removeexchangeprize(interaction: discord.Interaction, prize: str):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    prize = prize.strip()
+    async with db_lock:
+        async with get_db() as db:
+            if prize.isdigit():
+                async with db.execute(
+                    "SELECT name FROM exchange_prizes WHERE guild_id=? AND id=?",
+                    (interaction.guild.id, int(prize))) as cur:
+                    row = await cur.fetchone()
+                if not row:
+                    await interaction.response.send_message(
+                        f"❌ Prize #{prize} not found.", ephemeral=True); return
+                await db.execute("DELETE FROM exchange_prizes WHERE guild_id=? AND id=?",
+                                 (interaction.guild.id, int(prize)))
+            else:
+                async with db.execute(
+                    "SELECT name FROM exchange_prizes WHERE guild_id=? AND LOWER(name)=LOWER(?)",
+                    (interaction.guild.id, prize)) as cur:
+                    row = await cur.fetchone()
+                if not row:
+                    await interaction.response.send_message(
+                        f"❌ Prize **{prize}** not found.", ephemeral=True); return
+                await db.execute(
+                    "DELETE FROM exchange_prizes WHERE guild_id=? AND LOWER(name)=LOWER(?)",
+                    (interaction.guild.id, prize))
+            await db.commit()
+    await interaction.response.send_message(f"🗑 Removed prize **{row[0]}** from the exchange.")
+
+
+@bot.command(name="removeexchangeprize")
+async def pfx_removeexchangeprize(ctx, *, prize: str):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    await removeexchangeprize._callback(FakeInteraction(ctx), prize)
+
+
+@bot.tree.command(name="setexchangestock", description="Admin: change a prize's remaining stock")
+@app_commands.describe(prize="Prize name or ID", stock="New stock (-1 = unlimited)")
+@command_enabled()
+async def setexchangestock(interaction: discord.Interaction, prize: str, stock: int):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    prize = prize.strip()
+    async with db_lock:
+        async with get_db() as db:
+            if prize.isdigit():
+                async with db.execute("SELECT name FROM exchange_prizes WHERE guild_id=? AND id=?",
+                                      (interaction.guild.id, int(prize))) as cur:
+                    row = await cur.fetchone()
+                if not row:
+                    await interaction.response.send_message(f"❌ Prize #{prize} not found.",
+                                                            ephemeral=True); return
+                await db.execute("UPDATE exchange_prizes SET stock=? WHERE guild_id=? AND id=?",
+                                 (stock, interaction.guild.id, int(prize)))
+            else:
+                async with db.execute(
+                    "SELECT name FROM exchange_prizes WHERE guild_id=? AND LOWER(name)=LOWER(?)",
+                    (interaction.guild.id, prize)) as cur:
+                    row = await cur.fetchone()
+                if not row:
+                    await interaction.response.send_message(f"❌ Prize **{prize}** not found.",
+                                                            ephemeral=True); return
+                await db.execute(
+                    "UPDATE exchange_prizes SET stock=? WHERE guild_id=? AND LOWER(name)=LOWER(?)",
+                    (stock, interaction.guild.id, prize))
+            await db.commit()
+    stock_str = "unlimited" if stock < 0 else str(stock)
+    await interaction.response.send_message(f"✅ **{row[0]}** stock set to **{stock_str}**.")
+
+
+@bot.tree.command(name="toggleexchange", description="Admin: enable or disable the exchange system")
+@app_commands.describe(enabled="True to enable, False to disable")
+@command_enabled()
+async def toggleexchange(interaction: discord.Interaction, enabled: bool):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    await get_exchange_config(interaction.guild.id)
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute("UPDATE exchange_config SET enabled=? WHERE guild_id=?",
+                             (1 if enabled else 0, interaction.guild.id))
+            await db.commit()
+    await interaction.response.send_message(
+        f"{'✅ Exchange system **enabled**.' if enabled else '🔒 Exchange system **disabled**.'}")
+
+
+@bot.command(name="toggleexchange")
+async def pfx_toggleexchange(ctx, enabled: str):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    val = enabled.strip().lower() in ("true", "on", "yes", "1", "enable", "enabled")
+    await toggleexchange._callback(FakeInteraction(ctx), val)
+
+
+@bot.command(name="exchange")
+async def pfx_exchange(ctx, action: str = None, *, arg: str = None):
+    """!exchange rates | !exchange coinstoexp <amt> | !exchange exptocoins <amt> | !exchange prize <name>"""
+    p = common._BOT_PREFIX
+    if action is None:
+        await ctx.send(f"Use `{p}exchange rates`, `{p}exchange coinstoexp <amount>`, "
+                       f"`{p}exchange exptocoins <amount>`, or `{p}exchange prize <name>`."); return
+    action = action.strip().lower().replace("-", "").replace("_", "")
+    fake = FakeInteraction(ctx)
+    if action == "rates":
+        await exchange_rates._callback(fake)
+    elif action in ("coinstoexp", "ctoe"):
+        if not arg: await ctx.send("❌ Specify an amount."); return
+        await exchange_coins_to_exp._callback(fake, arg)
+    elif action in ("exptocoins", "etoc"):
+        if not arg: await ctx.send("❌ Specify an amount."); return
+        await exchange_exp_to_coins._callback(fake, arg)
+    elif action == "prize":
+        if not arg: await ctx.send("❌ Specify a prize name or ID."); return
+        await exchange_prize._callback(fake, arg)
+    else:
+        await ctx.send(f"❌ Unknown action. Use `rates`, `coinstoexp`, `exptocoins`, or `prize`.")
 
 
 if __name__ == "__main__":
