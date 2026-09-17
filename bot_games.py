@@ -17,7 +17,8 @@ from common import (
     VIP_CHEST_KEY, GAMBLE_TOKEN,
     disabled_commands, global_disabled_commands, load_disabled_commands,
     prefix_channel_rules, _prefix_channel_allowed, load_prefix_restrictions,
-    register_bot_instance, parse_amount, EmbedPaginator, paginate_lines,
+    register_bot_instance, parse_amount, EmbedPaginator, paginate_lines, 
+    record_host_event, get_host_bonus_entries,
 )
 
 _HOST_CHANNEL_ID = 1527412254746742784
@@ -258,6 +259,7 @@ async def host(interaction: discord.Interaction,
 
     await add_balance(gid, uid, -parsed_amount, bot=bot)
     await add_stat(gid, uid, "hosted_balance", parsed_amount)
+    await record_host_event(gid, uid, parsed_amount)
 
     end_time = datetime.now(UTC) + timedelta(seconds=_HOST_DURATION)
 
@@ -369,7 +371,10 @@ async def end_giveaway(message_id, reroll=False):
     weighted = []
     for user in users:
         lvl = await get_level(channel.guild.id, user.id)
-        weighted.extend([user] * random.randint(1, max(1, lvl // 4)))
+        base_entries = random.randint(1, max(1, lvl // 4))
+        member = channel.guild.get_member(user.id) or user
+        bonus = await get_host_bonus_entries(channel.guild.id, member)
+        weighted.extend([user] * (base_entries + bonus))
 
     winners = []
     while len(winners) < min(winner_count, len(users)) and weighted:
@@ -429,8 +434,12 @@ async def cmd_reroll(ctx, message_id: str):
     if not users: await ctx.send("❌ No participants."); return
     weighted = []
     for user in users:
-        lvl = await get_level(ctx.guild.id, user.id)
-        weighted.extend([user] * random.randint(1, max(1, lvl // 4)))
+        lvl = await get_level(interaction.guild.id, user.id)
+        base_entries = random.randint(1, max(1, lvl // 4))
+        member = interaction.guild.get_member(user.id) or user
+        bonus = await get_host_bonus_entries(interaction.guild.id, member)
+        weighted.extend([user] * (base_entries + bonus))
+
     new_winner = random.choice(weighted)
     async with db_lock:
         async with get_db() as db:
@@ -1398,9 +1407,12 @@ async def slash_reroll(interaction: discord.Interaction, message_id: str):
         await interaction.followup.send("❌ No participants."); return
     weighted = []
     for user in users:
-        lvl = await get_level(interaction.guild.id, user.id)
-        weighted.extend([user] * random.randint(1, max(1, lvl // 4)))
-    new_winner = random.choice(weighted)
+        lvl = await get_level(ctx.guild.id, user.id)
+        base_entries = random.randint(1, max(1, lvl // 4))
+        member = ctx.guild.get_member(user.id) or user
+        bonus = await get_host_bonus_entries(ctx.guild.id, member)
+        weighted.extend([user] * (base_entries + bonus))
+
     async with db_lock:
         async with get_db() as db:
             await db.execute("INSERT OR REPLACE INTO giveaway_winners VALUES(?,?,?)",
