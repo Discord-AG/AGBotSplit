@@ -18,6 +18,7 @@ from common import (
     disabled_commands, global_disabled_commands, load_disabled_commands,
     prefix_channel_rules, _prefix_channel_allowed, load_prefix_restrictions,
     register_bot_instance, parse_amount, EmbedPaginator, paginate_lines,
+    is_blacklisted, award_inviter_chest_cut,
 )
 
 TOKEN = os.getenv("TOKEN_DROPS")
@@ -237,6 +238,10 @@ async def _announce_rare(interaction, results, chest_type_label, rare_names):
 @command_enabled()
 async def chest(interaction: discord.Interaction, amount: int = 1):
     await interaction.response.defer()
+    if await is_blacklisted(interaction.guild.id, interaction.user.id):
+        await interaction.followup.send(
+            "🚫 You're blacklisted from the economy and can't open chests.", ephemeral=True)
+        return
     if amount <= 0: await interaction.followup.send("❌ Amount must be > 0."); return
     exp = await get_exp(interaction.guild.id, interaction.user.id)
     if exp >= 1400: amount = min(amount, exp // CHEST_COST)
@@ -255,7 +260,12 @@ async def chest(interaction: discord.Interaction, amount: int = 1):
 
     gid, uid = interaction.guild.id, interaction.user.id
     await _add_chest_spending(gid, uid, total_cost)
-    if total_balance > 0: await add_balance(gid, uid, total_balance, bot=bot)
+    if total_balance > 0:
+        await add_balance(gid, uid, total_balance, bot=bot)
+        cut = await award_inviter_chest_cut(gid, uid, total_balance, bot=bot)
+        if cut > 0:
+            inviter_id = await get_inviter_of(gid, uid)
+            print(f"[InviteCut] {cut:,} coins to inviter {inviter_id} from {uid}'s chest")
     if total_exp_won > 0: await add_exp(gid, uid, total_exp_won)
     from common import add_stat
     await add_stat(gid, uid, "chests_opened", amount)
@@ -280,6 +290,10 @@ async def vipchest(interaction: discord.Interaction, amount: int = 1):
     if not await is_system_enabled(interaction.guild.id, "vipkey"):
         await interaction.response.send_message("❌ VIP chest system is disabled.", ephemeral=True); return
     await interaction.response.defer()
+    if await is_blacklisted(interaction.guild.id, interaction.user.id):
+        await interaction.followup.send(
+            "🚫 You're blacklisted from the economy and can't open chests.", ephemeral=True)
+        return
     if amount <= 0: await interaction.followup.send("❌ Amount must be ≥ 1."); return
     inv = await inventory_get(interaction.guild.id, interaction.user.id)
     owned = {n.lower(): q for n, q in inv}
@@ -299,7 +313,12 @@ async def vipchest(interaction: discord.Interaction, amount: int = 1):
         results[prize["name"]] = results.get(prize["name"], 0) + 1
         total_balance += prize["balance"]; total_exp_won += prize["exp"]
 
-    if total_balance > 0: await add_balance(interaction.guild.id, interaction.user.id, total_balance, bot=bot)
+    if total_balance > 0:
+        await add_balance(interaction.guild.id, interaction.user.id, total_balance, bot=bot)
+        cut = await award_inviter_chest_cut(interaction.guild.id, interaction.user.id, total_balance, bot=bot)
+        if cut > 0:
+            inviter_id = await get_inviter_of(gid, uid)
+            print(f"[InviteCut] {cut:,} coins to inviter {inviter_id} from {uid}'s chest")
     if total_exp_won > 0: await add_exp(interaction.guild.id, interaction.user.id, total_exp_won)
 
     result_text = "\n".join(f"• {count}x {name}" for name, count in results.items())
@@ -392,6 +411,10 @@ async def _refresh_chest_channel(guild: discord.Guild):
 async def _do_open_exp_chests(interaction: discord.Interaction, amount: int):
     await interaction.response.defer(ephemeral=True)
     gid, uid = interaction.guild.id, interaction.user.id
+    if await is_blacklisted(gid, uid):
+        await interaction.followup.send(
+            "🚫 You're blacklisted from the economy and can't open chests.", ephemeral=True)
+        return
     exp = await get_exp(gid, uid)
     if exp < CHEST_COST:
         await interaction.followup.send(f"❌ You need {CHEST_COST:,} EXP (you have {exp:,}).", ephemeral=True); return
@@ -408,7 +431,12 @@ async def _do_open_exp_chests(interaction: discord.Interaction, amount: int):
         results[prize["name"]] = results.get(prize["name"], 0) + 1
         total_balance += prize["balance"]; total_exp_won += prize["exp"]
     await _add_chest_spending(gid, uid, total_cost)
-    if total_balance > 0: await add_balance(gid, uid, total_balance, bot=bot)
+    if total_balance > 0:
+        await add_balance(gid, uid, total_balance, bot=bot)
+        cut = await award_inviter_chest_cut(gid, uid, total_balance, bot=bot)
+        if cut > 0:
+            inviter_id = await get_inviter_of(gid, uid)
+            print(f"[InviteCut] {cut:,} coins to inviter {inviter_id} from {uid}'s chest")
     if total_exp_won > 0: await add_exp(gid, uid, total_exp_won)
     from common import add_stat
     await add_stat(gid, uid, "chests_opened", amount)
@@ -425,6 +453,10 @@ async def _do_open_exp_chests(interaction: discord.Interaction, amount: int):
 async def _do_open_vip_chests(interaction: discord.Interaction, amount: int):
     await interaction.response.defer(ephemeral=True)
     gid, uid = interaction.guild.id, interaction.user.id
+    if await is_blacklisted(gid, uid):
+        await interaction.followup.send(
+            "🚫 You're blacklisted from the economy and can't open chests.", ephemeral=True)
+        return
     if not await is_system_enabled(gid, "vipkey"):
         await interaction.followup.send("❌ VIP chest system is disabled.", ephemeral=True); return
     inv = await inventory_get(gid, uid)
@@ -441,7 +473,12 @@ async def _do_open_vip_chests(interaction: discord.Interaction, amount: int):
         prize = random.choices(prizes, weights=[p["chance"] for p in prizes], k=1)[0]
         results[prize["name"]] = results.get(prize["name"], 0) + 1
         total_balance += prize["balance"]; total_exp_won += prize["exp"]
-    if total_balance > 0: await add_balance(gid, uid, total_balance, bot=bot)
+    if total_balance > 0:
+        await add_balance(gid, uid, total_balance, bot=bot)
+        cut = await award_inviter_chest_cut(gid, uid, total_balance, bot=bot)
+        if cut > 0:
+            inviter_id = await get_inviter_of(gid, uid)
+            print(f"[InviteCut] {cut:,} coins to inviter {inviter_id} from {uid}'s chest")
     if total_exp_won > 0: await add_exp(gid, uid, total_exp_won)
     embed = discord.Embed(title=f"💎 VIP Chest Results ×{amount}",
                           description="\n".join(f"• {c}x **{n}**" for n, c in results.items()),
@@ -828,6 +865,8 @@ async def pfx_openbox(ctx, box: str, amount: int = 1):
 async def _process_mega_ticket_message(message: discord.Message):
     if not message.guild: return
     gid = message.guild.id
+    if await is_blacklisted(gid, message.author.id):
+        return
     if not await is_system_enabled(gid, "mega"): return
     content = message.content.strip()
     if not content or content.startswith(common._BOT_PREFIX): return
@@ -842,6 +881,9 @@ async def buytickets(interaction: discord.Interaction, amount: int):
     gid, uid = interaction.guild.id, interaction.user.id
     if not await is_system_enabled(gid, "mega"):
         await interaction.response.send_message("❌ Mega raffle system is disabled.", ephemeral=True); return
+    if await is_blacklisted(gid, uid):
+        await interaction.response.send_message(
+            "🚫 You're blacklisted from the economy.", ephemeral=True); return
     if amount <= 0:
         await interaction.response.send_message("❌ Amount must be > 0."); return
     async with get_db() as db:
@@ -1197,6 +1239,8 @@ async def _process_power_giveaway_message(message: discord.Message):
     if not message.guild: return
     if message.content.startswith(common._BOT_PREFIX): return
     gid = message.guild.id
+    if await is_blacklisted(gid, message.author.id):
+        return
     async with get_db() as db:
         async with db.execute("SELECT name FROM power_giveaway_config WHERE guild_id=? AND running=1", (gid,)) as cur:
             active_names = [r[0] for r in await cur.fetchall()]
@@ -1243,6 +1287,7 @@ async def _compute_power_entries(guild: discord.Guild, name: str, default_entrie
     totals: dict[int, float] = {}
     for member in guild.members:
         if member.bot: continue
+        if await is_blacklisted(gid, member.id): continue
         total = float(default_entries)
         for role in member.roles:
             if role.id in role_entry_map: total += role_entry_map[role.id]
