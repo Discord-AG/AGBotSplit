@@ -19,6 +19,7 @@ from common import (
     prefix_channel_rules, _prefix_channel_allowed, load_prefix_restrictions,
     register_bot_instance, parse_amount, EmbedPaginator, paginate_lines, 
     record_host_event, get_host_bonus_entries,
+    is_blacklisted,
 )
 
 _HOST_CHANNEL_ID = 1527412254746742784
@@ -69,6 +70,7 @@ async def _get_eligible_giveaway_participants(channel, reaction, required_role: 
         member = guild.get_member(user.id)
         if not member: continue
         if required_role and required_role not in {r.id for r in member.roles}: continue
+        if await is_blacklisted(guild.id, user.id): continue
         users.append(user)
 
     if not big_enough:
@@ -95,6 +97,7 @@ async def _get_eligible_giveaway_participants(channel, reaction, required_role: 
         if auid in existing_uids: continue
         ae_member = guild.get_member(auid)
         if not ae_member or ae_member.bot: continue
+        if await is_blacklisted(guild.id, auid): continue
         member_rids = {r.id for r in ae_member.roles}
         if auto_role_ids and not (auto_role_ids & member_rids): continue
         if required_role and required_role not in member_rids: continue
@@ -239,6 +242,10 @@ async def host(interaction: discord.Interaction,
             ephemeral=True); return
 
     gid, uid = interaction.guild.id, interaction.user.id
+    if await is_blacklisted(gid, uid):
+        await interaction.response.send_message(
+            "🚫 You're blacklisted from the economy and can't host giveaways.",
+            ephemeral=True); return
     bal = await get_balance(gid, uid)
     if bal < parsed_amount:
         await interaction.response.send_message(
@@ -2188,6 +2195,16 @@ async def guild_game_loop(guild_id: int):
 
         if session.get("answered") and session.get("winner"):
             winner = session["winner"]
+            if await is_blacklisted(guild_id, winner.id):
+                await channel.send(
+                    f"🚫 {winner.mention} answered correctly but is blacklisted "
+                    f"from the economy — no reward given.")
+                result_embed = discord.Embed(
+                    title="⏰ Round Over", color=discord.Color.orange(),
+                    description=f"The answer was **{correct_ans}**.")
+                await channel.send(embed=result_embed)
+                await asyncio.sleep(interval_seconds)
+                continue
             if game["reward_balance"] > 0:
                 await add_balance(guild_id, winner.id, game["reward_balance"], bot=bot)
             if game["reward_exp"] > 0:
@@ -2241,7 +2258,8 @@ async def on_message(message):
     if message.guild:
         session = active_game_sessions.get(message.guild.id)
         if session and not session.get("answered") and message.channel.id == session.get("channel_id"):
-            if message.content.strip().lower() == session["answer"].lower():
+            if (message.content.strip().lower() == session["answer"].lower()
+                    and not await is_blacklisted(message.guild.id, message.author.id)):
                 session["answered"] = True
                 session["winner"] = message.author
                 if "event" in session: session["event"].set()
