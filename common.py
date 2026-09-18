@@ -271,6 +271,56 @@ async def setup_database():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER, name TEXT, cost INTEGER,
                 description TEXT, stock INTEGER DEFAULT -1)""")
+
+            # ── Economy blacklist ────────────────────────────────────
+            await db.execute("""CREATE TABLE IF NOT EXISTS economy_blacklist(
+                guild_id INTEGER, user_id INTEGER,
+                reason TEXT, expires_at INTEGER DEFAULT 0,
+                blacklisted_by INTEGER, created_at INTEGER,
+                PRIMARY KEY(guild_id, user_id))""")
+
+            # ── Invite tracking ──────────────────────────────────────
+            await db.execute("""CREATE TABLE IF NOT EXISTS invite_codes(
+                guild_id INTEGER, code TEXT, inviter_id INTEGER,
+                uses INTEGER DEFAULT 0, created_at INTEGER,
+                PRIMARY KEY(guild_id, code))""")
+            await db.execute("""CREATE TABLE IF NOT EXISTS invite_uses(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER, invited_id INTEGER, inviter_id INTEGER,
+                code TEXT, joined_at INTEGER,
+                valid INTEGER DEFAULT 1, reason TEXT,
+                left_server INTEGER DEFAULT 0)""")
+            await db.execute("""CREATE INDEX IF NOT EXISTS idx_invite_uses_inviter
+                ON invite_uses(guild_id, inviter_id, valid)""")
+            await db.execute("""CREATE TABLE IF NOT EXISTS invite_config(
+                guild_id INTEGER PRIMARY KEY,
+                panel_channel_id INTEGER DEFAULT 0, panel_message_id INTEGER DEFAULT 0,
+                log_channel_id INTEGER DEFAULT 0,
+                min_account_age_days INTEGER DEFAULT 7,
+                chest_cut_percent REAL DEFAULT 40.0,
+                rewards_enabled INTEGER DEFAULT 1)""")
+            await db.execute("""CREATE TABLE IF NOT EXISTS invite_reward_tiers(
+                guild_id INTEGER, max_rank INTEGER, reward INTEGER,
+                PRIMARY KEY(guild_id, max_rank))""")
+            await db.execute("""CREATE TABLE IF NOT EXISTS invite_chest_earnings(
+                guild_id INTEGER, inviter_id INTEGER, total INTEGER DEFAULT 0,
+                PRIMARY KEY(guild_id, inviter_id))""")
+            await db.execute("""CREATE TABLE IF NOT EXISTS invite_reward_log(
+                guild_id INTEGER, user_id INTEGER, date TEXT, amount INTEGER,
+                PRIMARY KEY(guild_id, user_id, date))""")
+
+            # ── Bank ─────────────────────────────────────────────────
+            await db.execute("""CREATE TABLE IF NOT EXISTS bank_accounts(
+                guild_id INTEGER, user_id INTEGER, balance INTEGER DEFAULT 0,
+                PRIMARY KEY(guild_id, user_id))""")
+            await db.execute("""CREATE TABLE IF NOT EXISTS bank_config(
+                guild_id INTEGER PRIMARY KEY,
+                interest_rate REAL DEFAULT 1.0,
+                max_balance INTEGER DEFAULT -1,
+                enabled INTEGER DEFAULT 1)""")
+            await db.execute("""CREATE TABLE IF NOT EXISTS bank_interest_log(
+                guild_id INTEGER, user_id INTEGER, date TEXT, amount INTEGER,
+                PRIMARY KEY(guild_id, user_id, date))""")
  
             await db.commit()
  
@@ -519,9 +569,11 @@ async def get_balance(guild_id: int, user_id: int) -> int:
             return row[0]
  
  
-async def add_balance(guild_id: int, user_id: int, amount: int, bot=None):
-    """`bot` is optional. If omitted, we auto-find any registered bot
-    that's in this guild — so balance rank updates work from every caller."""
+async def add_balance(guild_id: int, user_id: int, amount: int, bot=None,
+                      skip_blacklist: bool = False):
+    if amount > 0 and not skip_blacklist:
+        if await is_blacklisted(guild_id, user_id):
+            return
     async with db_lock:
         async with get_db() as db:
             await db.execute(
@@ -628,7 +680,11 @@ async def add_stat(guild_id: int, user_id: int, column: str, amount: int):
 # EXP
 # ═══════════════════════════════════════════════════════
  
-async def add_exp(guild_id: int, user_id: int, amount: int, is_bonus: bool = False):
+async def add_exp(guild_id: int, user_id: int, amount: int, is_bonus: bool = False,
+                  skip_blacklist: bool = False):
+    if amount > 0 and not skip_blacklist:
+        if await is_blacklisted(guild_id, user_id):
+            return
     if amount > 0 and not is_bonus:
         await add_stat(guild_id, user_id, "total_exp", amount)
     async with db_lock:
@@ -1201,3 +1257,239 @@ async def get_exchange_config(guild_id: int) -> tuple[float, float, int, int]:
                 "INSERT OR IGNORE INTO exchange_config(guild_id) VALUES(?)", (guild_id,))
             await db.commit()
     return (1.0, 1.0, 0, 1)
+
+# ── Blacklist ────────────────────────────────────────────────────────────────
+
+async def is_blacklisted(guild_id: int, user_id: int) -> bool:
+    """True if the user is currently blacklisted. Expired entries auto-clear."""
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT expires_at FROM economy_blacklist WHERE guild_id=? AND user_id=?",
+            (guild_id, user_id)) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return False
+    expires_at = row[0]
+    if expires_at == 0:          # 0 = permanent
+        return True
+    if expires_at > int(datetime.now(UTC).timestamp()):
+        return True
+    # Expired — clean it up
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(
+                "DELETE FROM economy_blacklist WHERE guild_id=? AND user_id=?",
+                (guild_id, user_id))
+            await db.commit()
+    return False
+
+
+async def get_blacklist_entry(guild_id: int, user_id: int):
+    """Returns (reason, expires_at, blacklisted_by, created_at) or None."""
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT reason, expires_at, blacklisted_by, created_at "
+            "FROM economy_blacklist WHERE guild_id=? AND user_id=?",
+            (guild_id, user_id)) as cur:
+            return await cur.fetchone()
+
+
+async def add_to_blacklist(guild_id: int, user_id: int, reason: str,
+                           duration_seconds: int, by_user_id: int):
+    """duration_seconds <= 0 means permanent."""
+    now = int(datetime.now(UTC).timestamp())
+    expires_at = 0 if duration_seconds <= 0 else now + duration_seconds
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO economy_blacklist"
+                "(guild_id,user_id,reason,expires_at,blacklisted_by,created_at) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(guild_id,user_id) DO UPDATE SET "
+                "reason=excluded.reason, expires_at=excluded.expires_at, "
+                "blacklisted_by=excluded.blacklisted_by, created_at=excluded.created_at",
+                (guild_id, user_id, reason, expires_at, by_user_id, now))
+            await db.commit()
+
+
+async def remove_from_blacklist(guild_id: int, user_id: int) -> bool:
+    entry = await get_blacklist_entry(guild_id, user_id)
+    if not entry:
+        return False
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(
+                "DELETE FROM economy_blacklist WHERE guild_id=? AND user_id=?",
+                (guild_id, user_id))
+            await db.commit()
+    return True
+
+
+def format_duration(seconds: int) -> str:
+    if seconds <= 0:
+        return "permanent"
+    d, rem = divmod(seconds, 86400)
+    h, rem = divmod(rem, 3600)
+    m, _   = divmod(rem, 60)
+    parts = []
+    if d: parts.append(f"{d}d")
+    if h: parts.append(f"{h}h")
+    if m: parts.append(f"{m}m")
+    return " ".join(parts) or "<1m"
+
+
+def parse_duration(text: str) -> int | None:
+    """Parse '7d', '12h', '30m', '1d12h' → seconds. 'perm'/'forever' → 0."""
+    text = str(text).strip().lower()
+    if text in ("perm", "permanent", "forever", "0", "inf"):
+        return 0
+    import re as _re
+    total = 0
+    found = False
+    for amount, unit in _re.findall(r"(\d+)\s*([dhms])", text):
+        n = int(amount)
+        total += n * {"d": 86400, "h": 3600, "m": 60, "s": 1}[unit]
+        found = True
+    if found:
+        return total
+    try:
+        return max(0, int(text))
+    except ValueError:
+        return None
+
+
+# ── Invites ──────────────────────────────────────────────────────────────────
+
+async def get_invite_config(guild_id: int):
+    """Returns (panel_channel_id, panel_message_id, log_channel_id,
+    min_account_age_days, chest_cut_percent, rewards_enabled)."""
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT panel_channel_id, panel_message_id, log_channel_id, "
+            "min_account_age_days, chest_cut_percent, rewards_enabled "
+            "FROM invite_config WHERE guild_id=?", (guild_id,)) as cur:
+            row = await cur.fetchone()
+    if row:
+        return row
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute("INSERT OR IGNORE INTO invite_config(guild_id) VALUES(?)",
+                             (guild_id,))
+            await db.commit()
+    return (0, 0, 0, 7, 40.0, 1)
+
+
+async def get_invite_stats(guild_id: int, user_id: int) -> tuple[int, int]:
+    """Returns (valid_invites, invalid_invites) for one inviter."""
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT SUM(CASE WHEN valid=1 THEN 1 ELSE 0 END), "
+            "       SUM(CASE WHEN valid=0 THEN 1 ELSE 0 END) "
+            "FROM invite_uses WHERE guild_id=? AND inviter_id=?",
+            (guild_id, user_id)) as cur:
+            row = await cur.fetchone()
+    return (int(row[0] or 0), int(row[1] or 0))
+
+
+async def get_invite_leaderboard(guild_id: int) -> list[tuple[int, int]]:
+    """[(inviter_id, valid_invite_count), ...] sorted descending."""
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT inviter_id, COUNT(*) FROM invite_uses "
+            "WHERE guild_id=? AND valid=1 GROUP BY inviter_id "
+            "ORDER BY COUNT(*) DESC", (guild_id,)) as cur:
+            return [(uid, int(c)) for uid, c in await cur.fetchall()]
+
+
+async def get_invite_rank(guild_id: int, user_id: int) -> int | None:
+    lb = await get_invite_leaderboard(guild_id)
+    for i, (uid, _) in enumerate(lb):
+        if uid == user_id:
+            return i + 1
+    return None
+
+
+async def get_inviter_of(guild_id: int, user_id: int) -> int | None:
+    """Who invited this user (most recent valid record)."""
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT inviter_id FROM invite_uses WHERE guild_id=? AND invited_id=? "
+            "ORDER BY joined_at DESC LIMIT 1", (guild_id, user_id)) as cur:
+            row = await cur.fetchone()
+    return row[0] if row else None
+
+
+async def get_invite_chest_earnings(guild_id: int, user_id: int) -> int:
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT total FROM invite_chest_earnings WHERE guild_id=? AND inviter_id=?",
+            (guild_id, user_id)) as cur:
+            row = await cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+async def award_inviter_chest_cut(guild_id: int, opener_id: int,
+                                  coins_won: int, bot=None) -> int:
+    """Give the inviter a cut of coins their invitee won from a chest.
+    The invitee keeps their full amount — this is extra, not a deduction.
+    Returns the amount awarded (0 if no inviter / blacklisted / disabled)."""
+    if coins_won <= 0:
+        return 0
+    inviter_id = await get_inviter_of(guild_id, opener_id)
+    if not inviter_id or inviter_id == opener_id:
+        return 0
+    if await is_blacklisted(guild_id, inviter_id):
+        return 0
+    _pc, _pm, _lc, _age, cut_percent, _re = await get_invite_config(guild_id)
+    cut = int(coins_won * (cut_percent / 100.0))
+    if cut <= 0:
+        return 0
+    await add_balance(guild_id, inviter_id, cut, bot=bot)
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO invite_chest_earnings(guild_id,inviter_id,total) VALUES(?,?,?) "
+                "ON CONFLICT(guild_id,inviter_id) DO UPDATE SET total=total+excluded.total",
+                (guild_id, inviter_id, cut))
+            await db.commit()
+    return cut
+
+
+# ── Bank ─────────────────────────────────────────────────────────────────────
+
+async def get_bank_config(guild_id: int) -> tuple[float, int, int]:
+    """Returns (interest_rate_percent, max_balance, enabled)."""
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT interest_rate, max_balance, enabled FROM bank_config WHERE guild_id=?",
+            (guild_id,)) as cur:
+            row = await cur.fetchone()
+    if row:
+        return row
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute("INSERT OR IGNORE INTO bank_config(guild_id) VALUES(?)",
+                             (guild_id,))
+            await db.commit()
+    return (1.0, -1, 1)
+
+
+async def get_bank_balance(guild_id: int, user_id: int) -> int:
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT balance FROM bank_accounts WHERE guild_id=? AND user_id=?",
+            (guild_id, user_id)) as cur:
+            row = await cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+async def add_bank_balance(guild_id: int, user_id: int, amount: int):
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO bank_accounts(guild_id,user_id,balance) VALUES(?,?,?) "
+                "ON CONFLICT(guild_id,user_id) DO UPDATE SET balance=balance+excluded.balance",
+                (guild_id, user_id, amount))
+            await db.execute(
+                "UPDATE bank_accounts SET balance=0 "
+                "WHERE guild_id=? AND user_id=? AND balance<0", (guild_id, user_id))
+            await db.commit()
