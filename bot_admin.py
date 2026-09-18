@@ -1736,15 +1736,13 @@ class ReportModal(discord.ui.Modal, title="Report User"):
         guild = interaction.guild
         
         try:
-            target_id = int(self.reported_user_id.value)
-        if target_id == user.id:
-            return await interaction.followup.send("you cannot report youself!", ephemeral=True)
-        
+            target_id = int(self.reported_user_id.value) 
         except ValueError:
             return await interaction.followup.send("Invalid User ID or user is not in this server.", ephemeral=True)
+        
+        if target_id == user.id:
+            return await interaction.followup.send("you cannot report youself!", ephemeral=True)
                 
-            
-       
         channel = await create_ticket_channel(guild, user, "report")
         active_tickets.add(user.id)
 
