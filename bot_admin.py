@@ -22,6 +22,11 @@ from common import (
     register_bot_instance, parse_amount, EmbedPaginator, paginate_lines,
     record_host_event, get_host_leaderboard, get_host_role_config,
     get_host_bonus_entries, sync_host_roles, get_exchange_config,
+    is_blacklisted, get_blacklist_entry, add_to_blacklist, remove_from_blacklist,
+    format_duration, parse_duration,
+    get_invite_config, get_invite_stats, get_invite_leaderboard, get_invite_rank,
+    get_inviter_of, get_invite_chest_earnings,
+    get_bank_config, get_bank_balance, add_bank_balance,
 )
 
 TOKEN = os.getenv("TOKEN_ADMIN")
@@ -1240,6 +1245,12 @@ async def on_member_join(member: discord.Member):
     if member.bot: return
     gid = member.guild.id
 
+    # Work out which invite was used before anything else touches the cache
+    try:
+        await _record_invite_join(member)
+    except Exception as e:
+        print(f"[Invites] join tracking failed for {member}: {e}")
+
     async with db_lock:
         async with get_db() as db:
             await db.execute("DELETE FROM auto_reset_pending WHERE guild_id=? AND user_id=?",
@@ -1277,6 +1288,10 @@ async def on_member_join(member: discord.Member):
 async def on_member_remove(member: discord.Member):
     if member.bot: return
     gid = member.guild.id
+    try:
+        await _mark_invite_left(member)
+    except Exception as e:
+        print(f"[Invites] leave tracking failed for {member}: {e}")
     async with get_db() as db:
         async with db.execute("SELECT enabled FROM auto_reset_config WHERE guild_id=?", (gid,)) as cur:
             cfg = await cur.fetchone()
@@ -1303,6 +1318,8 @@ async def on_ready():
     await load_disabled_commands()
     await load_prefix_restrictions()
     bot.add_view(AdminPanelView())
+    bot.add_view(InvitePanelView())
+    bot.add_view(AdminPanelExtrasView())
     bot.add_view(TicketPanelView())
     bot.add_view(CloseTicketView())
     bot.add_view(TradeInitialView())
@@ -1318,7 +1335,12 @@ async def on_ready():
     bot.tree.clear_commands(guild=None)
     await bot.tree.sync()
 
+    # Seed the invite cache so the first join after startup resolves correctly
+    for g in bot.guilds:
+        await _refresh_invite_cache(g)
+
     for task_fn in [auto_reset_loop, host_role_loop,
+                    bank_interest_loop, invite_reward_loop,
                     lambda: msg_count_flush_loop(bot)]:
         bot.loop.create_task(task_fn())
 
@@ -1627,6 +1649,7 @@ async def slash_resetrole(interaction: discord.Interaction,
 
 
 STAFF_ROLE_ID = 1541906011802050733
+EXCHANGE_PING_ROLE_ID = 1550230803810623570   # pinged on prize-claim tickets
 TRANSCRIPT_CHANNEL_ID = 1540713749265256599
 
 active_tickets = set()
@@ -1734,15 +1757,7 @@ class ReportModal(discord.ui.Modal, title="Report User"):
         await interaction.response.defer(ephemeral=True)
         user = interaction.user
         guild = interaction.guild
-        
-        try:
-            target_id = int(self.reported_user_id.value) 
-        except ValueError:
-            return await interaction.followup.send("Invalid User ID or user is not in this server.", ephemeral=True)
-        
-        if target_id == user.id:
-            return await interaction.followup.send("you cannot report youself!", ephemeral=True)
-                
+
         channel = await create_ticket_channel(guild, user, "report")
         active_tickets.add(user.id)
 
@@ -1775,9 +1790,6 @@ class TradeModal(discord.ui.Modal, title="Trade User"):
 
         try:
             target_id = int(self.trader_user_id.value)
-            if target_id == user.id:
-                return await interaction.followup.send("you cannot trade youself!", ephemeral=True)
-                
             target_member = await guild.fetch_member(target_id)
         except Exception:
             return await interaction.followup.send("Invalid User ID or user is not in this server.", ephemeral=True)
@@ -1895,6 +1907,20 @@ class TradeInitialView(discord.ui.View):
             return await interaction.response.send_message("Gems have already been deposited!", ephemeral=True)
 
         await interaction.response.send_modal(DepositAmountModal())
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, custom_id="trade_cancel_initial")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        state = trade_states.get(channel.id)
+
+        if not state:
+            return await interaction.response.send_message("Trade session lost.", ephemeral=True)
+
+        if interaction.user.id not in [state.creator_id, state.target_id]:
+            return await interaction.response.send_message("Only trade participants can cancel.", ephemeral=True)
+
+        await interaction.response.send_message("Trade cancelled. Closing ticket...")
+        await close_ticket_process(channel, interaction.guild, interaction.client)
 
 
 class TradeActiveView(discord.ui.View):
@@ -2269,6 +2295,7 @@ async def _create_exchange_ticket(guild: discord.Guild, user: discord.Member,
         category = None
 
     staff_role = guild.get_role(STAFF_ROLE_ID)
+    ping_role  = guild.get_role(EXCHANGE_PING_ROLE_ID)
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         user: discord.PermissionOverwrite(view_channel=True, send_messages=True,
@@ -2276,6 +2303,9 @@ async def _create_exchange_ticket(guild: discord.Guild, user: discord.Member,
     }
     if staff_role:
         overwrites[staff_role] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True)
+    if ping_role:
+        overwrites[ping_role] = discord.PermissionOverwrite(
             view_channel=True, send_messages=True, read_message_history=True)
 
     try:
@@ -2456,7 +2486,7 @@ async def exchange_prize(interaction: discord.Interaction, prize: str):
                     "UPDATE exchange_prizes SET stock=stock-1 WHERE id=?", (pid,))
                 await db.commit()
 
-    ping = await channel.send(f"<@{uid}> <@&{STAFF_ROLE_ID}>")
+    ping = await channel.send(f"<@{uid}> <@&{EXCHANGE_PING_ROLE_ID}>")
     await ping.delete()
 
     embed = discord.Embed(title="🎁 Prize Claim", color=discord.Color.gold(),
@@ -2698,6 +2728,1231 @@ async def pfx_exchange(ctx, action: str = None, *, arg: str = None):
         await exchange_prize._callback(fake, arg)
     else:
         await ctx.send(f"❌ Unknown action. Use `rates`, `coinstoexp`, `exptocoins`, or `prize`.")
+
+
+# ═══════════════════════════════════════════════════════
+# ECONOMY BLACKLIST
+# ═══════════════════════════════════════════════════════
+
+@bot.tree.command(name="blacklist",
+                  description="Admin: block a user from the economy (temporarily or forever)")
+@app_commands.describe(
+    user="User to blacklist",
+    duration="e.g. 7d, 12h, 30m — or 'perm' for permanent",
+    reason="Why they're being blacklisted")
+@command_enabled()
+async def blacklist_cmd(interaction: discord.Interaction, user: discord.Member,
+                        duration: str = "perm", reason: str = "No reason given"):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    if user.id == BOT_OWNER_ID:
+        await interaction.response.send_message("❌ You can't blacklist the bot owner.",
+                                                ephemeral=True); return
+    secs = parse_duration(duration)
+    if secs is None:
+        await interaction.response.send_message(
+            "❌ Invalid duration. Use `7d`, `12h`, `30m`, or `perm`.", ephemeral=True); return
+
+    await add_to_blacklist(interaction.guild.id, user.id, reason, secs, interaction.user.id)
+    dur_str = format_duration(secs)
+    embed = discord.Embed(title="🚫 User Blacklisted", color=discord.Color.red())
+    embed.add_field(name="User", value=user.mention, inline=True)
+    embed.add_field(name="Duration", value=dur_str, inline=True)
+    embed.add_field(name="Reason", value=reason, inline=False)
+    embed.set_footer(text="They can't earn coins or EXP, open chests, enter giveaways, "
+                          "use the exchange, or earn bank interest.")
+    await interaction.response.send_message(embed=embed)
+    await log_event(interaction.guild.id, "admin", _log_embed(
+        "🚫 Blacklisted", discord.Color.red(),
+        Admin=interaction.user.mention, User=user.mention,
+        Duration=dur_str, Reason=reason))
+
+
+@bot.command(name="blacklist")
+async def pfx_blacklist(ctx, user: discord.Member, duration: str = "perm", *, reason: str = "No reason given"):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    await blacklist_cmd._callback(FakeInteraction(ctx), user, duration, reason)
+
+
+@bot.tree.command(name="unblacklist", description="Admin: restore a user's economy access")
+@app_commands.describe(user="User to remove from the blacklist")
+@command_enabled()
+async def unblacklist_cmd(interaction: discord.Interaction, user: discord.Member):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    removed = await remove_from_blacklist(interaction.guild.id, user.id)
+    if not removed:
+        await interaction.response.send_message(
+            f"ℹ️ {user.mention} isn't blacklisted.", ephemeral=True); return
+    await interaction.response.send_message(f"✅ {user.mention} removed from the blacklist.")
+    await log_event(interaction.guild.id, "admin", _log_embed(
+        "✅ Unblacklisted", discord.Color.green(),
+        Admin=interaction.user.mention, User=user.mention))
+
+
+@bot.command(name="unblacklist")
+async def pfx_unblacklist(ctx, user: discord.Member):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    await unblacklist_cmd._callback(FakeInteraction(ctx), user)
+
+
+@bot.tree.command(name="checkblacklist", description="Check if a user is blacklisted")
+@app_commands.describe(user="User to check (defaults to yourself)")
+@command_enabled()
+async def checkblacklist(interaction: discord.Interaction, user: discord.Member = None):
+    user = user or interaction.user
+    entry = await get_blacklist_entry(interaction.guild.id, user.id)
+    active = await is_blacklisted(interaction.guild.id, user.id)
+    if not entry or not active:
+        await interaction.response.send_message(
+            f"✅ {user.mention} is **not** blacklisted.", ephemeral=True); return
+    reason, expires_at, by_id, created_at = entry
+    by = interaction.guild.get_member(by_id)
+    embed = discord.Embed(title="🚫 Blacklisted", color=discord.Color.red())
+    embed.add_field(name="User", value=user.mention, inline=True)
+    embed.add_field(name="Expires",
+                    value=("Never (permanent)" if expires_at == 0 else f"<t:{expires_at}:R>"),
+                    inline=True)
+    embed.add_field(name="Reason", value=reason or "No reason given", inline=False)
+    embed.add_field(name="By", value=by.mention if by else f"<@{by_id}>", inline=True)
+    embed.add_field(name="Since", value=f"<t:{created_at}:D>", inline=True)
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.command(name="checkblacklist")
+async def pfx_checkblacklist(ctx, user: discord.Member = None):
+    await checkblacklist._callback(FakeInteraction(ctx), user)
+
+
+@bot.tree.command(name="listblacklist", description="List everyone currently blacklisted")
+@command_enabled()
+async def listblacklist(interaction: discord.Interaction):
+    await interaction.response.defer()
+    now = int(datetime.now(UTC).timestamp())
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT user_id, reason, expires_at FROM economy_blacklist "
+            "WHERE guild_id=? AND (expires_at=0 OR expires_at>?) ORDER BY created_at DESC",
+            (interaction.guild.id, now)) as cur:
+            rows = await cur.fetchall()
+    if not rows:
+        await interaction.followup.send("✅ Nobody is currently blacklisted."); return
+    lines = []
+    for uid, reason, expires_at in rows:
+        m = interaction.guild.get_member(uid)
+        name = m.mention if m else f"<@{uid}>"
+        exp_str = "**permanent**" if expires_at == 0 else f"until <t:{expires_at}:R>"
+        lines.append(f"• {name} — {exp_str}\n  *{reason or 'No reason given'}*")
+    pages = paginate_lines(lines, "🚫 Economy Blacklist", discord.Color.red(), per_page=10)
+    view = EmbedPaginator(pages, interaction.user.id) if len(pages) > 1 else None
+    await interaction.followup.send(embed=pages[0], view=view)
+
+
+@bot.command(name="listblacklist")
+async def pfx_listblacklist(ctx):
+    await listblacklist._callback(FakeInteraction(ctx))
+
+
+# ═══════════════════════════════════════════════════════
+# BANK
+# ═══════════════════════════════════════════════════════
+
+bank_group = app_commands.Group(name="bank", description="Deposit coins and earn daily interest")
+bot.tree.add_command(bank_group)
+
+
+@bank_group.command(name="balance", description="Check your bank balance")
+@app_commands.describe(user="User to check (defaults to yourself)")
+async def bank_balance(interaction: discord.Interaction, user: discord.Member = None):
+    user = user or interaction.user
+    gid = interaction.guild.id
+    rate, max_bal, enabled = await get_bank_config(gid)
+    bank_bal = await get_bank_balance(gid, user.id)
+    wallet   = await get_balance(gid, user.id)
+    daily    = int(bank_bal * (rate / 100.0))
+    embed = discord.Embed(title=f"🏦 {user.display_name}'s Bank", color=discord.Color.blue())
+    embed.add_field(name="Banked", value=f"💰 {bank_bal:,}", inline=True)
+    embed.add_field(name="Wallet", value=f"💰 {wallet:,}", inline=True)
+    embed.add_field(name="Daily Interest", value=f"**{rate:g}%** → +{daily:,}/day", inline=True)
+    if max_bal >= 0:
+        embed.add_field(name="Deposit Cap", value=f"{max_bal:,}", inline=True)
+    if not enabled:
+        embed.set_footer(text="⚠️ The bank is currently disabled — no interest is being paid.")
+    elif await is_blacklisted(gid, user.id):
+        embed.set_footer(text="🚫 Blacklisted — no interest will be paid.")
+    await interaction.response.send_message(embed=embed)
+
+
+@bank_group.command(name="deposit", description="Move coins from your wallet into the bank")
+@app_commands.describe(amount="Amount to deposit — supports 1k, 1m, 1b, or 'all'")
+async def bank_deposit(interaction: discord.Interaction, amount: str):
+    gid, uid = interaction.guild.id, interaction.user.id
+    rate, max_bal, enabled = await get_bank_config(gid)
+    if not enabled:
+        await interaction.response.send_message("🔒 The bank is currently disabled.",
+                                                ephemeral=True); return
+    if await is_blacklisted(gid, uid):
+        await interaction.response.send_message("🚫 You're blacklisted from the economy.",
+                                                ephemeral=True); return
+
+    wallet = await get_balance(gid, uid)
+    if amount.strip().lower() in ("all", "max"):
+        parsed = wallet
+    else:
+        parsed = parse_amount(amount)
+    if parsed is None or parsed <= 0:
+        await interaction.response.send_message("❌ Invalid amount.", ephemeral=True); return
+    if wallet < parsed:
+        await interaction.response.send_message(
+            f"❌ You only have **{wallet:,}** coins in your wallet.", ephemeral=True); return
+
+    current = await get_bank_balance(gid, uid)
+    if max_bal >= 0 and current + parsed > max_bal:
+        allowed = max_bal - current
+        if allowed <= 0:
+            await interaction.response.send_message(
+                f"❌ Your bank is already at the **{max_bal:,}** cap.", ephemeral=True); return
+        await interaction.response.send_message(
+            f"❌ That would exceed the **{max_bal:,}** cap. You can deposit at most **{allowed:,}** more.",
+            ephemeral=True); return
+
+    await add_balance(gid, uid, -parsed, bot=bot)
+    await add_bank_balance(gid, uid, parsed)
+    new_bank = await get_bank_balance(gid, uid)
+    await interaction.response.send_message(
+        f"🏦 Deposited **{parsed:,}** coins.\nBank: **{new_bank:,}** · "
+        f"Earning **{rate:g}%** daily (+{int(new_bank * rate / 100):,}/day)")
+
+
+@bank_group.command(name="withdraw", description="Move coins from the bank back to your wallet")
+@app_commands.describe(amount="Amount to withdraw — supports 1k, 1m, 1b, or 'all'")
+async def bank_withdraw(interaction: discord.Interaction, amount: str):
+    gid, uid = interaction.guild.id, interaction.user.id
+    _rate, _max, enabled = await get_bank_config(gid)
+    if not enabled:
+        await interaction.response.send_message("🔒 The bank is currently disabled.",
+                                                ephemeral=True); return
+
+    bank_bal = await get_bank_balance(gid, uid)
+    if amount.strip().lower() in ("all", "max"):
+        parsed = bank_bal
+    else:
+        parsed = parse_amount(amount)
+    if parsed is None or parsed <= 0:
+        await interaction.response.send_message("❌ Invalid amount.", ephemeral=True); return
+    if bank_bal < parsed:
+        await interaction.response.send_message(
+            f"❌ You only have **{bank_bal:,}** coins banked.", ephemeral=True); return
+
+    await add_bank_balance(gid, uid, -parsed)
+    # skip_blacklist: this is their own money coming back, not a new gain
+    await add_balance(gid, uid, parsed, bot=bot, skip_blacklist=True)
+    await interaction.response.send_message(
+        f"🏦 Withdrew **{parsed:,}** coins.\nBank: **{await get_bank_balance(gid, uid):,}**")
+
+
+@bot.command(name="bank")
+async def pfx_bank(ctx, action: str = "balance", *, arg: str = None):
+    """!bank balance | !bank deposit <amt> | !bank withdraw <amt>"""
+    fake = FakeInteraction(ctx)
+    action = action.strip().lower()
+    if action in ("balance", "bal", "info"):
+        await bank_balance._callback(fake, None)
+    elif action in ("deposit", "dep", "d"):
+        if not arg: await ctx.send("❌ Specify an amount."); return
+        await bank_deposit._callback(fake, arg)
+    elif action in ("withdraw", "with", "w"):
+        if not arg: await ctx.send("❌ Specify an amount."); return
+        await bank_withdraw._callback(fake, arg)
+    else:
+        p = common._BOT_PREFIX
+        await ctx.send(f"Use `{p}bank balance`, `{p}bank deposit <amount>`, or `{p}bank withdraw <amount>`.")
+
+
+@bot.tree.command(name="setbankinterest", description="Admin: set the daily bank interest rate")
+@app_commands.describe(rate="Daily interest as a percentage, e.g. 1.5 for 1.5% per day")
+@command_enabled()
+async def setbankinterest(interaction: discord.Interaction, rate: float):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    if rate < 0:
+        await interaction.response.send_message("❌ Rate can't be negative.", ephemeral=True); return
+    await get_bank_config(interaction.guild.id)
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute("UPDATE bank_config SET interest_rate=? WHERE guild_id=?",
+                             (rate, interaction.guild.id))
+            await db.commit()
+    await interaction.response.send_message(
+        f"✅ Daily bank interest set to **{rate:g}%**.\n"
+        f"Someone with 1,000,000 banked would earn **{int(1_000_000 * rate / 100):,}**/day.")
+
+
+@bot.command(name="setbankinterest")
+async def pfx_setbankinterest(ctx, rate: float):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    await setbankinterest._callback(FakeInteraction(ctx), rate)
+
+
+@bot.tree.command(name="setbankcap", description="Admin: set the maximum bank balance (-1 = unlimited)")
+@app_commands.describe(cap="Max coins a user can bank — supports 1k/1m/1b, or -1 for unlimited")
+@command_enabled()
+async def setbankcap(interaction: discord.Interaction, cap: str):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    if cap.strip() in ("-1", "unlimited", "none"):
+        parsed = -1
+    else:
+        parsed = parse_amount(cap)
+        if parsed is None or parsed < 0:
+            await interaction.response.send_message("❌ Invalid cap.", ephemeral=True); return
+    await get_bank_config(interaction.guild.id)
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute("UPDATE bank_config SET max_balance=? WHERE guild_id=?",
+                             (parsed, interaction.guild.id))
+            await db.commit()
+    await interaction.response.send_message(
+        f"✅ Bank cap set to **{'unlimited' if parsed < 0 else f'{parsed:,}'}**.")
+
+
+@bot.tree.command(name="togglebank", description="Admin: enable or disable the bank")
+@app_commands.describe(enabled="True to enable, False to disable")
+@command_enabled()
+async def togglebank(interaction: discord.Interaction, enabled: bool):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    await get_bank_config(interaction.guild.id)
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute("UPDATE bank_config SET enabled=? WHERE guild_id=?",
+                             (1 if enabled else 0, interaction.guild.id))
+            await db.commit()
+    await interaction.response.send_message(
+        "✅ Bank **enabled**." if enabled else "🔒 Bank **disabled**.")
+
+
+async def bank_interest_loop():
+    """Pay daily interest at midnight UTC. Blacklisted users are skipped."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        now    = datetime.now(UTC)
+        target = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        await asyncio.sleep(max(60, (target - now).total_seconds()))
+
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        for guild in bot.guilds:
+            try:
+                rate, _max, enabled = await get_bank_config(guild.id)
+                if not enabled or rate <= 0:
+                    continue
+                async with get_db() as db:
+                    async with db.execute(
+                        "SELECT user_id, balance FROM bank_accounts "
+                        "WHERE guild_id=? AND balance>0", (guild.id,)) as cur:
+                        accounts = await cur.fetchall()
+                paid = skipped = total_paid = 0
+                for uid, bal in accounts:
+                    if await is_blacklisted(guild.id, uid):
+                        skipped += 1
+                        continue
+                    interest = int(bal * (rate / 100.0))
+                    if interest <= 0:
+                        continue
+                    await add_bank_balance(guild.id, uid, interest)
+                    async with db_lock:
+                        async with get_db() as db:
+                            await db.execute(
+                                "INSERT OR REPLACE INTO bank_interest_log"
+                                "(guild_id,user_id,date,amount) VALUES(?,?,?,?)",
+                                (guild.id, uid, today, interest))
+                            await db.commit()
+                    paid += 1; total_paid += interest
+                if paid or skipped:
+                    await log_event(guild.id, "balance", _log_embed(
+                        "🏦 Daily Bank Interest", discord.Color.blue(),
+                        Rate=f"{rate:g}%", Accounts_Paid=str(paid),
+                        Total_Paid=f"{total_paid:,}", Skipped_Blacklisted=str(skipped)))
+            except Exception as e:
+                print(f"[BankInterest] guild {guild.id}: {e}")
+
+
+# ═══════════════════════════════════════════════════════
+# INVITE TRACKING
+# ═══════════════════════════════════════════════════════
+
+# {guild_id: {code: uses}} — snapshot used to work out which invite was used
+_invite_cache: dict[int, dict[str, int]] = {}
+
+
+async def _refresh_invite_cache(guild: discord.Guild):
+    try:
+        invites = await guild.invites()
+        _invite_cache[guild.id] = {inv.code: (inv.uses or 0) for inv in invites}
+    except discord.Forbidden:
+        print(f"[Invites] Missing Manage Server permission in {guild.name}")
+    except Exception as e:
+        print(f"[Invites] cache refresh failed for {guild.name}: {e}")
+
+
+async def _find_used_invite(guild: discord.Guild):
+    """Compare current invite uses against the cache to find which code was used."""
+    before = _invite_cache.get(guild.id, {})
+    try:
+        invites = await guild.invites()
+    except Exception:
+        return None
+    used = None
+    for inv in invites:
+        prev = before.get(inv.code, 0)
+        if (inv.uses or 0) > prev:
+            used = inv
+            break
+    _invite_cache[guild.id] = {inv.code: (inv.uses or 0) for inv in invites}
+    return used
+
+
+@bot.event
+async def on_invite_create(invite: discord.Invite):
+    if invite.guild:
+        _invite_cache.setdefault(invite.guild.id, {})[invite.code] = invite.uses or 0
+        if invite.inviter:
+            async with db_lock:
+                async with get_db() as db:
+                    await db.execute(
+                        "INSERT INTO invite_codes(guild_id,code,inviter_id,uses,created_at) "
+                        "VALUES(?,?,?,?,?) ON CONFLICT(guild_id,code) DO UPDATE SET "
+                        "inviter_id=excluded.inviter_id",
+                        (invite.guild.id, invite.code, invite.inviter.id,
+                         invite.uses or 0, int(datetime.now(UTC).timestamp())))
+                    await db.commit()
+
+
+@bot.event
+async def on_invite_delete(invite: discord.Invite):
+    if invite.guild:
+        _invite_cache.get(invite.guild.id, {}).pop(invite.code, None)
+
+
+async def _record_invite_join(member: discord.Member):
+    """Called from on_member_join. Figures out who invited them and whether it counts."""
+    guild = member.guild
+    gid   = guild.id
+    used  = await _find_used_invite(guild)
+    if not used or not used.inviter:
+        return
+    inviter = used.inviter
+    if inviter.id == member.id or inviter.bot:
+        return
+
+    _pc, _pm, log_ch_id, min_age_days, _cut, _re = await get_invite_config(gid)
+
+    # Validity: account must be older than the configured minimum
+    account_age_days = (datetime.now(UTC) - member.created_at).days
+    valid, reason = 1, "Valid"
+    if account_age_days < min_age_days:
+        valid, reason = 0, f"Account only {account_age_days}d old (min {min_age_days}d)"
+
+    # Rejoin check — if they were invited before, don't double-count
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT id FROM invite_uses WHERE guild_id=? AND invited_id=?",
+            (gid, member.id)) as cur:
+            prior = await cur.fetchone()
+    if prior:
+        valid, reason = 0, "Rejoined (already counted previously)"
+
+    now = int(datetime.now(UTC).timestamp())
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO invite_uses(guild_id,invited_id,inviter_id,code,joined_at,valid,reason) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (gid, member.id, inviter.id, used.code, now, valid, reason))
+            await db.commit()
+
+    if log_ch_id:
+        ch = bot.get_channel(log_ch_id)
+        if ch:
+            embed = discord.Embed(
+                title="📥 Member Joined via Invite",
+                color=discord.Color.green() if valid else discord.Color.orange())
+            embed.add_field(name="Member", value=f"{member.mention}\n`{member.id}`", inline=True)
+            embed.add_field(name="Invited by", value=f"{inviter.mention}\n`{inviter.id}`", inline=True)
+            embed.add_field(name="Code", value=f"`{used.code}`", inline=True)
+            embed.add_field(name="Status",
+                            value=("✅ Valid" if valid else f"⚠️ Invalid — {reason}"), inline=False)
+            embed.add_field(name="Account Created",
+                            value=f"<t:{int(member.created_at.timestamp())}:R>", inline=True)
+            embed.set_footer(text="Use /addinvite or /removeinvite to correct this")
+            try: await ch.send(embed=embed)
+            except Exception: pass
+
+
+async def _mark_invite_left(member: discord.Member):
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE invite_uses SET left_server=1 WHERE guild_id=? AND invited_id=?",
+                (member.guild.id, member.id))
+            await db.commit()
+
+
+# ── Invite panel ─────────────────────────────────────────────────────────────
+
+class InvitePanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Get My Invite Link", emoji="🔗",
+                       style=discord.ButtonStyle.primary, custom_id="invite_panel:code")
+    async def get_code(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        uid   = interaction.user.id
+        async with get_db() as db:
+            async with db.execute(
+                "SELECT code FROM invite_codes WHERE guild_id=? AND inviter_id=? "
+                "ORDER BY created_at ASC LIMIT 1", (guild.id, uid)) as cur:
+                row = await cur.fetchone()
+
+        existing_code = None
+        if row:
+            try:
+                for inv in await guild.invites():
+                    if inv.code == row[0]:
+                        existing_code = inv.code
+                        break
+            except Exception:
+                pass
+
+        if existing_code:
+            await interaction.response.send_message(
+                f"🔗 Your invite link:\nhttps://discord.gg/{existing_code}", ephemeral=True)
+            return
+
+        try:
+            invite = await interaction.channel.create_invite(
+                max_age=0, max_uses=0, unique=True,
+                reason=f"Personal invite link for {interaction.user}")
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ I don't have permission to create invites here.", ephemeral=True); return
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Couldn't create an invite: {e}",
+                                                    ephemeral=True); return
+
+        async with db_lock:
+            async with get_db() as db:
+                await db.execute(
+                    "INSERT INTO invite_codes(guild_id,code,inviter_id,uses,created_at) "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(guild_id,code) DO UPDATE SET "
+                    "inviter_id=excluded.inviter_id",
+                    (guild.id, invite.code, uid, 0, int(datetime.now(UTC).timestamp())))
+                await db.commit()
+        _invite_cache.setdefault(guild.id, {})[invite.code] = 0
+
+        await interaction.response.send_message(
+            f"🔗 Your personal invite link:\n{invite.url}\n\n"
+            f"Anyone who joins with this counts toward your invite stats.", ephemeral=True)
+
+    @discord.ui.button(label="My Stats", emoji="📊",
+                       style=discord.ButtonStyle.secondary, custom_id="invite_panel:stats")
+    async def my_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        gid, uid = interaction.guild.id, interaction.user.id
+        valid, invalid = await get_invite_stats(gid, uid)
+        rank      = await get_invite_rank(gid, uid)
+        earnings  = await get_invite_chest_earnings(gid, uid)
+        _pc, _pm, _lc, _age, cut_percent, _re = await get_invite_config(gid)
+
+        embed = discord.Embed(title=f"📊 {interaction.user.display_name}'s Invite Stats",
+                              color=discord.Color.blurple())
+        embed.add_field(name="Rank", value=(f"#{rank}" if rank else "Unranked"), inline=True)
+        embed.add_field(name="✅ Valid", value=f"{valid:,}", inline=True)
+        embed.add_field(name="⚠️ Invalid", value=f"{invalid:,}", inline=True)
+        embed.add_field(name="💰 Earned from Invitees' Chests",
+                        value=f"{earnings:,} coins",
+                        inline=False)
+        embed.set_footer(text=f"You earn {cut_percent:g}% of any coins your invitees win "
+                              f"from chests — they still get their full amount.")
+
+        # Show what tier they're in / next tier up
+        async with get_db() as db:
+            async with db.execute(
+                "SELECT max_rank, reward FROM invite_reward_tiers "
+                "WHERE guild_id=? ORDER BY max_rank ASC", (gid,)) as cur:
+                tiers = await cur.fetchall()
+        if tiers:
+            current = next((r for mr, r in tiers if rank and rank <= mr), None)
+            lines = [f"Top {mr}: **{r:,}** coins/day" for mr, r in tiers]
+            embed.add_field(name="🎁 Daily Reward Tiers", value="\n".join(lines), inline=False)
+            if current:
+                embed.add_field(name="Your Daily Reward", value=f"**{current:,}** coins", inline=True)
+            else:
+                needed = tiers[-1][0]
+                embed.add_field(name="Your Daily Reward",
+                                value=f"None — reach top {needed} to qualify", inline=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Leaderboard", emoji="🏆",
+                       style=discord.ButtonStyle.secondary, custom_id="invite_panel:leaderboard")
+    async def leaderboard_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        gid = interaction.guild.id
+        lb  = await get_invite_leaderboard(gid)
+        if not lb:
+            await interaction.response.send_message("❌ Nobody has any valid invites yet.",
+                                                    ephemeral=True); return
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, (uid, count) in enumerate(lb[:25]):
+            m = interaction.guild.get_member(uid)
+            name = m.display_name if m else "*[Left Server]*"
+            star = " ★" if uid == interaction.user.id else ""
+            prefix = medals[i] if i < 3 else f"**#{i+1}**"
+            lines.append(f"{prefix} {name}{star} — {count:,} invites")
+        embed = discord.Embed(title="🏆 Invite Leaderboard",
+                              description="\n".join(lines), color=discord.Color.gold())
+        my_rank = await get_invite_rank(gid, interaction.user.id)
+        if my_rank:
+            embed.set_footer(text=f"Your rank: #{my_rank}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="setinvitepanel", description="Admin: post the invite rewards panel")
+@app_commands.describe(channel="Channel to post the panel in")
+@command_enabled()
+async def setinvitepanel(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    await interaction.response.defer()
+    gid = interaction.guild.id
+    await get_invite_config(gid)
+
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT panel_channel_id, panel_message_id FROM invite_config WHERE guild_id=?",
+            (gid,)) as cur:
+            old = await cur.fetchone()
+    if old and old[0] and old[1]:
+        old_ch = bot.get_channel(old[0])
+        if old_ch:
+            try: await (await old_ch.fetch_message(old[1])).delete()
+            except Exception: pass
+
+    _pc, _pm, _lc, min_age, cut_percent, _re = await get_invite_config(gid)
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT max_rank, reward FROM invite_reward_tiers WHERE guild_id=? ORDER BY max_rank ASC",
+            (gid,)) as cur:
+            tiers = await cur.fetchall()
+
+    embed = discord.Embed(
+        title="🔗 Invite Rewards",
+        description=("Invite people and earn daily coin rewards based on your rank.\n\n"
+                     "**🔗 Get My Invite Link** — create your personal tracked invite\n"
+                     "**📊 My Stats** — your rank, valid/invalid invites, and chest earnings\n"
+                     "**🏆 Leaderboard** — see the top inviters"),
+        color=discord.Color.blurple())
+    if tiers:
+        embed.add_field(name="🎁 Daily Rewards",
+                        value="\n".join(f"Top {mr} → **{r:,}** coins/day" for mr, r in tiers),
+                        inline=False)
+    embed.add_field(name="💰 Chest Cut",
+                    value=f"You earn **{cut_percent:g}%** of any coins your invitees win from "
+                          f"chests — they keep their full amount.", inline=False)
+    embed.set_footer(text=f"Invites only count if the account is at least {min_age} days old.")
+
+    msg = await channel.send(embed=embed, view=InvitePanelView())
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE invite_config SET panel_channel_id=?, panel_message_id=? WHERE guild_id=?",
+                (channel.id, msg.id, gid))
+            await db.commit()
+    await interaction.followup.send(f"✅ Invite panel posted in {channel.mention}.")
+
+
+@bot.tree.command(name="setinvitelogchannel", description="Admin: set the invite log channel")
+@app_commands.describe(channel="Channel where joins/invite changes get logged")
+@command_enabled()
+async def setinvitelogchannel(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    await get_invite_config(interaction.guild.id)
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute("UPDATE invite_config SET log_channel_id=? WHERE guild_id=?",
+                             (channel.id, interaction.guild.id))
+            await db.commit()
+    await interaction.response.send_message(f"✅ Invite log → {channel.mention}")
+
+
+@bot.tree.command(name="setinvitetier",
+                  description="Admin: set the daily coin reward for a leaderboard rank tier")
+@app_commands.describe(
+    max_rank="Top N — e.g. 10 means ranks 1-10 get this reward",
+    reward="Daily coins — supports 1k, 1m, 1b. Use 0 to delete the tier.")
+@command_enabled()
+async def setinvitetier(interaction: discord.Interaction, max_rank: int, reward: str):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    if max_rank < 1:
+        await interaction.response.send_message("❌ max_rank must be ≥ 1.", ephemeral=True); return
+    parsed = parse_amount(reward)
+    if parsed is None or parsed < 0:
+        await interaction.response.send_message("❌ Invalid reward.", ephemeral=True); return
+
+    async with db_lock:
+        async with get_db() as db:
+            if parsed == 0:
+                await db.execute(
+                    "DELETE FROM invite_reward_tiers WHERE guild_id=? AND max_rank=?",
+                    (interaction.guild.id, max_rank))
+            else:
+                await db.execute(
+                    "INSERT INTO invite_reward_tiers(guild_id,max_rank,reward) VALUES(?,?,?) "
+                    "ON CONFLICT(guild_id,max_rank) DO UPDATE SET reward=excluded.reward",
+                    (interaction.guild.id, max_rank, parsed))
+            await db.commit()
+
+    if parsed == 0:
+        await interaction.response.send_message(f"🗑 Removed the top-{max_rank} tier.")
+        return
+
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT max_rank, reward FROM invite_reward_tiers WHERE guild_id=? ORDER BY max_rank ASC",
+            (interaction.guild.id,)) as cur:
+            tiers = await cur.fetchall()
+    lines = "\n".join(f"• Top {mr} → **{r:,}** coins/day" for mr, r in tiers)
+    await interaction.response.send_message(
+        f"✅ Top **{max_rank}** now earns **{parsed:,}** coins/day.\n\n**All tiers:**\n{lines}\n\n"
+        f"*Tiers apply smallest-first, so someone at rank 5 gets the top-10 reward, not top-25.*")
+
+
+@bot.command(name="setinvitetier")
+async def pfx_setinvitetier(ctx, max_rank: int, reward: str):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    await setinvitetier._callback(FakeInteraction(ctx), max_rank, reward)
+
+
+@bot.tree.command(name="setinvitechestcut",
+                  description="Admin: set what % of invitees' chest coins the inviter earns")
+@app_commands.describe(percent="Percentage, e.g. 40 for 40%")
+@command_enabled()
+async def setinvitechestcut(interaction: discord.Interaction, percent: float):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    if percent < 0 or percent > 1000:
+        await interaction.response.send_message("❌ Percent must be between 0 and 1000.",
+                                                ephemeral=True); return
+    await get_invite_config(interaction.guild.id)
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute("UPDATE invite_config SET chest_cut_percent=? WHERE guild_id=?",
+                             (percent, interaction.guild.id))
+            await db.commit()
+    await interaction.response.send_message(
+        f"✅ Inviters now earn **{percent:g}%** of coins their invitees win from chests.\n"
+        f"*The invitee still receives their full amount — this is additional.*")
+
+
+@bot.tree.command(name="setinviteminage",
+                  description="Admin: minimum account age (days) for an invite to count as valid")
+@app_commands.describe(days="Minimum account age in days")
+@command_enabled()
+async def setinviteminage(interaction: discord.Interaction, days: int):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    if days < 0:
+        await interaction.response.send_message("❌ Days must be ≥ 0.", ephemeral=True); return
+    await get_invite_config(interaction.guild.id)
+    async with db_lock:
+        async with get_db() as db:
+            await db.execute("UPDATE invite_config SET min_account_age_days=? WHERE guild_id=?",
+                             (days, interaction.guild.id))
+            await db.commit()
+    await interaction.response.send_message(
+        f"✅ Accounts must be at least **{days}** days old for an invite to count as valid.")
+
+
+@bot.tree.command(name="inviteleaderboard", description="View the invite leaderboard")
+@command_enabled()
+async def inviteleaderboard(interaction: discord.Interaction):
+    await interaction.response.defer()
+    gid = interaction.guild.id
+    lb  = await get_invite_leaderboard(gid)
+    if not lb:
+        await interaction.followup.send("❌ Nobody has any valid invites yet."); return
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT max_rank, reward FROM invite_reward_tiers WHERE guild_id=? ORDER BY max_rank ASC",
+            (gid,)) as cur:
+            tiers = await cur.fetchall()
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines  = []
+    for i, (uid, count) in enumerate(lb):
+        rank = i + 1
+        m    = interaction.guild.get_member(uid)
+        name = m.display_name if m else "*[Left Server]*"
+        star = " ★" if uid == interaction.user.id else ""
+        prefix = medals[i] if i < 3 else f"**#{rank}**"
+        tier_reward = next((r for mr, r in tiers if rank <= mr), None)
+        reward_str = f" · 🎁 {tier_reward:,}/day" if tier_reward else ""
+        lines.append(f"{prefix} {name}{star} — {count:,} invites{reward_str}")
+
+    pages = paginate_lines(lines, "🏆 Invite Leaderboard", discord.Color.gold(), per_page=10)
+    my_rank = await get_invite_rank(gid, interaction.user.id)
+    for i, e in enumerate(pages):
+        foot = f"Page {i+1}/{len(pages)} · {len(lb)} inviter(s)"
+        if my_rank: foot += f" · Your rank: #{my_rank}"
+        e.set_footer(text=foot)
+    view = EmbedPaginator(pages, interaction.user.id) if len(pages) > 1 else None
+    await interaction.followup.send(embed=pages[0], view=view)
+
+
+@bot.command(name="inviteleaderboard")
+async def pfx_inviteleaderboard(ctx):
+    await inviteleaderboard._callback(FakeInteraction(ctx))
+
+
+@bot.tree.command(name="invitestats", description="View a user's invite stats")
+@app_commands.describe(user="User to check (defaults to yourself)")
+@command_enabled()
+async def invitestats(interaction: discord.Interaction, user: discord.Member = None):
+    user = user or interaction.user
+    gid  = interaction.guild.id
+    valid, invalid = await get_invite_stats(gid, user.id)
+    rank     = await get_invite_rank(gid, user.id)
+    earnings = await get_invite_chest_earnings(gid, user.id)
+    embed = discord.Embed(title=f"📊 {user.display_name}'s Invite Stats",
+                          color=discord.Color.blurple())
+    embed.add_field(name="Rank", value=(f"#{rank}" if rank else "Unranked"), inline=True)
+    embed.add_field(name="✅ Valid", value=f"{valid:,}", inline=True)
+    embed.add_field(name="⚠️ Invalid", value=f"{invalid:,}", inline=True)
+    embed.add_field(name="💰 Earned from Invitees' Chests", value=f"{earnings:,} coins", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.command(name="invitestats")
+async def pfx_invitestats(ctx, user: discord.Member = None):
+    await invitestats._callback(FakeInteraction(ctx), user)
+
+
+@bot.tree.command(name="invitelog", description="View who invited whom")
+@app_commands.describe(user="Filter to one inviter (optional)")
+@command_enabled()
+async def invitelog(interaction: discord.Interaction, user: discord.Member = None):
+    await interaction.response.defer()
+    gid = interaction.guild.id
+    async with get_db() as db:
+        if user:
+            async with db.execute(
+                "SELECT id, invited_id, inviter_id, code, joined_at, valid, reason, left_server "
+                "FROM invite_uses WHERE guild_id=? AND inviter_id=? ORDER BY joined_at DESC LIMIT 100",
+                (gid, user.id)) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with db.execute(
+                "SELECT id, invited_id, inviter_id, code, joined_at, valid, reason, left_server "
+                "FROM invite_uses WHERE guild_id=? ORDER BY joined_at DESC LIMIT 100",
+                (gid,)) as cur:
+                rows = await cur.fetchall()
+    if not rows:
+        await interaction.followup.send("❌ No invite records found."); return
+
+    lines = []
+    for rid, invited_id, inviter_id, code, joined_at, valid, reason, left in rows:
+        inv_m = interaction.guild.get_member(invited_id)
+        itr_m = interaction.guild.get_member(inviter_id)
+        inv_n = inv_m.display_name if inv_m else f"<@{invited_id}>"
+        itr_n = itr_m.display_name if itr_m else f"<@{inviter_id}>"
+        status = "✅" if valid else "⚠️"
+        left_s = " 🚪left" if left else ""
+        lines.append(f"`#{rid}` {status} **{inv_n}** ← {itr_n} · `{code}` · "
+                     f"<t:{joined_at}:d>{left_s}"
+                     + (f"\n    *{reason}*" if not valid else ""))
+    title = f"📋 Invite Log{f' — {user.display_name}' if user else ''}"
+    pages = paginate_lines(lines, title, discord.Color.blurple(), per_page=10)
+    for i, e in enumerate(pages):
+        e.set_footer(text=f"Page {i+1}/{len(pages)} · Use /addinvite or /removeinvite with the `#ID`")
+    view = EmbedPaginator(pages, interaction.user.id) if len(pages) > 1 else None
+    await interaction.followup.send(embed=pages[0], view=view)
+
+
+@bot.command(name="invitelog")
+async def pfx_invitelog(ctx, user: discord.Member = None):
+    await invitelog._callback(FakeInteraction(ctx), user)
+
+
+@bot.tree.command(name="addinvite",
+                  description="Admin: mark an invite record as valid, or credit a manual invite")
+@app_commands.describe(
+    record_id="Record ID from /invitelog (leave blank to add a manual credit instead)",
+    inviter="For a manual credit: who gets the invite",
+    invited="For a manual credit: who they invited")
+@command_enabled()
+async def addinvite(interaction: discord.Interaction, record_id: int = None,
+                    inviter: discord.Member = None, invited: discord.Member = None):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    gid = interaction.guild.id
+
+    if record_id is not None:
+        async with get_db() as db:
+            async with db.execute(
+                "SELECT invited_id, inviter_id, valid FROM invite_uses WHERE id=? AND guild_id=?",
+                (record_id, gid)) as cur:
+                row = await cur.fetchone()
+        if not row:
+            await interaction.response.send_message(f"❌ Record `#{record_id}` not found.",
+                                                    ephemeral=True); return
+        if row[2] == 1:
+            await interaction.response.send_message(f"ℹ️ Record `#{record_id}` is already valid.",
+                                                    ephemeral=True); return
+        async with db_lock:
+            async with get_db() as db:
+                await db.execute(
+                    "UPDATE invite_uses SET valid=1, reason=? WHERE id=?",
+                    (f"Manually validated by {interaction.user}", record_id))
+                await db.commit()
+        await interaction.response.send_message(
+            f"✅ Record `#{record_id}` marked **valid** — <@{row[1]}> now gets credit for <@{row[0]}>.")
+        await log_event(gid, "admin", _log_embed(
+            "✅ Invite Validated", discord.Color.green(),
+            Admin=interaction.user.mention, Record=f"#{record_id}",
+            Inviter=f"<@{row[1]}>", Invited=f"<@{row[0]}>"))
+        return
+
+    if not inviter or not invited:
+        await interaction.response.send_message(
+            "❌ Either give a `record_id`, or both `inviter` and `invited` for a manual credit.",
+            ephemeral=True); return
+
+    now = int(datetime.now(UTC).timestamp())
+    async with db_lock:
+        async with get_db() as db:
+            cur = await db.execute(
+                "INSERT INTO invite_uses(guild_id,invited_id,inviter_id,code,joined_at,valid,reason) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (gid, invited.id, inviter.id, "manual", now, 1,
+                 f"Manually added by {interaction.user}"))
+            new_id = cur.lastrowid
+            await db.commit()
+    await interaction.response.send_message(
+        f"✅ Manual invite credited (`#{new_id}`): {inviter.mention} ← invited {invited.mention}")
+    await log_event(gid, "admin", _log_embed(
+        "➕ Invite Added Manually", discord.Color.green(),
+        Admin=interaction.user.mention, Inviter=inviter.mention, Invited=invited.mention))
+
+
+@bot.tree.command(name="removeinvite",
+                  description="Admin: mark an invite record invalid, or delete it entirely")
+@app_commands.describe(record_id="Record ID from /invitelog",
+                       delete="True to delete the record outright instead of marking it invalid")
+@command_enabled()
+async def removeinvite(interaction: discord.Interaction, record_id: int, delete: bool = False):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    gid = interaction.guild.id
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT invited_id, inviter_id, valid FROM invite_uses WHERE id=? AND guild_id=?",
+            (record_id, gid)) as cur:
+            row = await cur.fetchone()
+    if not row:
+        await interaction.response.send_message(f"❌ Record `#{record_id}` not found.",
+                                                ephemeral=True); return
+    async with db_lock:
+        async with get_db() as db:
+            if delete:
+                await db.execute("DELETE FROM invite_uses WHERE id=?", (record_id,))
+            else:
+                await db.execute(
+                    "UPDATE invite_uses SET valid=0, reason=? WHERE id=?",
+                    (f"Manually invalidated by {interaction.user}", record_id))
+            await db.commit()
+    action = "deleted" if delete else "marked **invalid**"
+    await interaction.response.send_message(
+        f"✅ Record `#{record_id}` {action} — <@{row[1]}> no longer gets credit for <@{row[0]}>.")
+    await log_event(gid, "admin", _log_embed(
+        "➖ Invite Removed", discord.Color.orange(),
+        Admin=interaction.user.mention, Record=f"#{record_id}",
+        Action=action, Inviter=f"<@{row[1]}>", Invited=f"<@{row[0]}>"))
+
+
+async def invite_reward_loop():
+    """Pay daily invite rewards at midnight UTC based on leaderboard rank."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        now    = datetime.now(UTC)
+        target = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        await asyncio.sleep(max(60, (target - now).total_seconds()))
+
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        for guild in bot.guilds:
+            try:
+                _pc, _pm, log_ch, _age, _cut, rewards_enabled = await get_invite_config(guild.id)
+                if not rewards_enabled:
+                    continue
+                async with get_db() as db:
+                    async with db.execute(
+                        "SELECT max_rank, reward FROM invite_reward_tiers "
+                        "WHERE guild_id=? ORDER BY max_rank ASC", (guild.id,)) as cur:
+                        tiers = await cur.fetchall()
+                if not tiers:
+                    continue
+
+                lb = await get_invite_leaderboard(guild.id)
+                paid = skipped = 0; total = 0
+                for i, (uid, _count) in enumerate(lb):
+                    rank = i + 1
+                    reward = next((r for mr, r in tiers if rank <= mr), None)
+                    if not reward:
+                        continue
+                    if await is_blacklisted(guild.id, uid):
+                        skipped += 1
+                        continue
+                    member = guild.get_member(uid)
+                    if not member:
+                        continue
+                    await add_balance(guild.id, uid, reward, bot=bot)
+                    async with db_lock:
+                        async with get_db() as db:
+                            await db.execute(
+                                "INSERT OR REPLACE INTO invite_reward_log"
+                                "(guild_id,user_id,date,amount) VALUES(?,?,?,?)",
+                                (guild.id, uid, today, reward))
+                            await db.commit()
+                    paid += 1; total += reward
+
+                if paid or skipped:
+                    await log_event(guild.id, "balance", _log_embed(
+                        "🎁 Daily Invite Rewards", discord.Color.gold(),
+                        Paid=str(paid), Total=f"{total:,} coins",
+                        Skipped_Blacklisted=str(skipped)))
+                    if log_ch:
+                        ch = bot.get_channel(log_ch)
+                        if ch:
+                            try:
+                                await ch.send(embed=discord.Embed(
+                                    title="🎁 Daily Invite Rewards Paid",
+                                    description=f"**{paid}** inviter(s) paid a total of "
+                                                f"**{total:,}** coins."
+                                                + (f"\n{skipped} skipped (blacklisted)." if skipped else ""),
+                                    color=discord.Color.gold()))
+                            except Exception: pass
+            except Exception as e:
+                print(f"[InviteRewards] guild {guild.id}: {e}")
+
+
+# ═══════════════════════════════════════════════════════
+# ADMIN PANEL — bank interest control
+# ═══════════════════════════════════════════════════════
+
+class _BankInterestModal(discord.ui.Modal, title="🏦 Bank Settings"):
+    rate_input = discord.ui.TextInput(
+        label="Daily interest rate (%)",
+        placeholder="e.g. 1.5 for 1.5% per day",
+        required=True, max_length=10)
+    cap_input = discord.ui.TextInput(
+        label="Max bank balance (blank = leave unchanged)",
+        placeholder="e.g. 10b, or -1 for unlimited",
+        required=False, max_length=20)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        gid = interaction.guild.id
+        try:
+            rate = float(self.rate_input.value.strip())
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid rate — enter a number like `1.5`.",
+                                                    ephemeral=True); return
+        if rate < 0:
+            await interaction.response.send_message("❌ Rate can't be negative.", ephemeral=True); return
+
+        cap_txt = self.cap_input.value.strip()
+        new_cap = None
+        if cap_txt:
+            if cap_txt in ("-1", "unlimited", "none"):
+                new_cap = -1
+            else:
+                new_cap = parse_amount(cap_txt)
+                if new_cap is None or new_cap < 0:
+                    await interaction.response.send_message("❌ Invalid cap.", ephemeral=True); return
+
+        await get_bank_config(gid)
+        async with db_lock:
+            async with get_db() as db:
+                await db.execute("UPDATE bank_config SET interest_rate=? WHERE guild_id=?",
+                                 (rate, gid))
+                if new_cap is not None:
+                    await db.execute("UPDATE bank_config SET max_balance=? WHERE guild_id=?",
+                                     (new_cap, gid))
+                await db.commit()
+
+        msg = (f"✅ Daily bank interest set to **{rate:g}%**.\n"
+               f"1,000,000 banked → **{int(1_000_000 * rate / 100):,}** coins/day.")
+        if new_cap is not None:
+            msg += f"\nBank cap: **{'unlimited' if new_cap < 0 else f'{new_cap:,}'}**"
+        msg += "\n\n*Blacklisted users are skipped when interest is paid.*"
+        await interaction.response.send_message(msg, ephemeral=True)
+        await log_event(gid, "admin", _log_embed(
+            "🏦 Bank Settings Updated", discord.Color.blue(),
+            Admin=interaction.user.mention, Interest=f"{rate:g}%",
+            Cap=("unchanged" if new_cap is None
+                 else ("unlimited" if new_cap < 0 else f"{new_cap:,}"))))
+
+
+class _BlacklistModal(discord.ui.Modal, title="🚫 Blacklist User"):
+    user_input     = discord.ui.TextInput(label="User ID or @mention", max_length=30)
+    duration_input = discord.ui.TextInput(
+        label="Duration (7d / 12h / 30m / perm)",
+        placeholder="perm", default="perm", max_length=20)
+    reason_input   = discord.ui.TextInput(
+        label="Reason", required=False, max_length=200,
+        style=discord.TextStyle.paragraph)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        uid_raw = self.user_input.value.strip().lstrip("<@!").rstrip(">")
+        try: uid = int(uid_raw)
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid user ID.", ephemeral=True); return
+        if uid == BOT_OWNER_ID:
+            await interaction.response.send_message("❌ You can't blacklist the bot owner.",
+                                                    ephemeral=True); return
+        member = interaction.guild.get_member(uid)
+        if not member:
+            await interaction.response.send_message("❌ Member not found in this server.",
+                                                    ephemeral=True); return
+        secs = parse_duration(self.duration_input.value or "perm")
+        if secs is None:
+            await interaction.response.send_message(
+                "❌ Invalid duration. Use `7d`, `12h`, `30m`, or `perm`.", ephemeral=True); return
+        reason = self.reason_input.value.strip() or "No reason given"
+        await add_to_blacklist(interaction.guild.id, uid, reason, secs, interaction.user.id)
+        await interaction.response.send_message(
+            f"🚫 {member.mention} blacklisted — **{format_duration(secs)}**\nReason: {reason}",
+            ephemeral=True)
+        await log_event(interaction.guild.id, "admin", _log_embed(
+            "🚫 Blacklisted (Panel)", discord.Color.red(),
+            Admin=interaction.user.mention, User=member.mention,
+            Duration=format_duration(secs), Reason=reason))
+
+
+class _UnblacklistModal(discord.ui.Modal, title="✅ Unblacklist User"):
+    user_input = discord.ui.TextInput(label="User ID or @mention", max_length=30)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        uid_raw = self.user_input.value.strip().lstrip("<@!").rstrip(">")
+        try: uid = int(uid_raw)
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid user ID.", ephemeral=True); return
+        removed = await remove_from_blacklist(interaction.guild.id, uid)
+        if not removed:
+            await interaction.response.send_message(f"ℹ️ <@{uid}> isn't blacklisted.",
+                                                    ephemeral=True); return
+        await interaction.response.send_message(f"✅ <@{uid}> removed from the blacklist.",
+                                                ephemeral=True)
+        await log_event(interaction.guild.id, "admin", _log_embed(
+            "✅ Unblacklisted (Panel)", discord.Color.green(),
+            Admin=interaction.user.mention, User=f"<@{uid}>"))
+
+
+class AdminPanelExtrasView(discord.ui.View):
+    """Second admin panel row — bank + blacklist controls."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _check(self, interaction: discord.Interaction) -> bool:
+        if not await is_allowed_to_giveaway(interaction):
+            await interaction.response.send_message("❌ No permission.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="🏦 Bank Settings", style=discord.ButtonStyle.primary,
+                       custom_id="ap2:bank", row=0)
+    async def bank_btn(self, i: discord.Interaction, b):
+        if await self._check(i): await i.response.send_modal(_BankInterestModal())
+
+    @discord.ui.button(label="🚫 Blacklist", style=discord.ButtonStyle.danger,
+                       custom_id="ap2:blacklist", row=0)
+    async def blacklist_btn(self, i: discord.Interaction, b):
+        if await self._check(i): await i.response.send_modal(_BlacklistModal())
+
+    @discord.ui.button(label="✅ Unblacklist", style=discord.ButtonStyle.success,
+                       custom_id="ap2:unblacklist", row=0)
+    async def unblacklist_btn(self, i: discord.Interaction, b):
+        if await self._check(i): await i.response.send_modal(_UnblacklistModal())
+
+    @discord.ui.button(label="📋 View Blacklist", style=discord.ButtonStyle.secondary,
+                       custom_id="ap2:viewblacklist", row=1)
+    async def view_bl(self, i: discord.Interaction, b):
+        if not await self._check(i): return
+        now = int(datetime.now(UTC).timestamp())
+        async with get_db() as db:
+            async with db.execute(
+                "SELECT user_id, reason, expires_at FROM economy_blacklist "
+                "WHERE guild_id=? AND (expires_at=0 OR expires_at>?) ORDER BY created_at DESC LIMIT 25",
+                (i.guild.id, now)) as cur:
+                rows = await cur.fetchall()
+        if not rows:
+            await i.response.send_message("✅ Nobody is currently blacklisted.", ephemeral=True); return
+        lines = []
+        for uid, reason, exp in rows:
+            exp_s = "**permanent**" if exp == 0 else f"until <t:{exp}:R>"
+            lines.append(f"• <@{uid}> — {exp_s}\n  *{reason or 'No reason'}*")
+        await i.response.send_message(
+            embed=discord.Embed(title="🚫 Economy Blacklist",
+                                description="\n".join(lines), color=discord.Color.red()),
+            ephemeral=True)
+
+    @discord.ui.button(label="🏦 Bank Overview", style=discord.ButtonStyle.secondary,
+                       custom_id="ap2:bankinfo", row=1)
+    async def bank_info(self, i: discord.Interaction, b):
+        if not await self._check(i): return
+        gid = i.guild.id
+        rate, cap, enabled = await get_bank_config(gid)
+        async with get_db() as db:
+            async with db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(balance),0) FROM bank_accounts "
+                "WHERE guild_id=? AND balance>0", (gid,)) as cur:
+                count, total = await cur.fetchone()
+        daily_cost = int(total * (rate / 100.0))
+        embed = discord.Embed(title="🏦 Bank Overview", color=discord.Color.blue())
+        embed.add_field(name="Status", value="✅ Enabled" if enabled else "🔒 Disabled", inline=True)
+        embed.add_field(name="Daily Interest", value=f"{rate:g}%", inline=True)
+        embed.add_field(name="Cap", value=("unlimited" if cap < 0 else f"{cap:,}"), inline=True)
+        embed.add_field(name="Accounts", value=f"{count:,}", inline=True)
+        embed.add_field(name="Total Banked", value=f"{total:,}", inline=True)
+        embed.add_field(name="Interest Paid/Day", value=f"~{daily_cost:,}", inline=True)
+        await i.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="setadminpanel2",
+                  description="Admin: post the second admin panel (bank + blacklist controls)")
+@app_commands.describe(channel="Channel to post the panel in")
+@command_enabled()
+async def setadminpanel2(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    embed = discord.Embed(
+        title="🛠 Admin Panel — Bank & Blacklist",
+        description=("**🏦 Bank Settings** — set the daily interest rate and deposit cap\n"
+                     "**🚫 Blacklist** — block a user from the economy (temporary or permanent)\n"
+                     "**✅ Unblacklist** — restore access\n"
+                     "**📋 View Blacklist** — see who's currently blocked\n"
+                     "**🏦 Bank Overview** — total banked and daily interest cost"),
+        color=discord.Color.dark_gold())
+    embed.set_footer(text="Blacklisted users earn no coins, EXP, chest rewards, "
+                          "giveaway entries, or bank interest.")
+    await channel.send(embed=embed, view=AdminPanelExtrasView())
+    await interaction.response.send_message(f"✅ Second admin panel posted in {channel.mention}.")
+
+
+@bot.command(name="setadminpanel2")
+async def pfx_setadminpanel2(ctx, channel: discord.TextChannel):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    await setadminpanel2._callback(FakeInteraction(ctx), channel)
 
 
 if __name__ == "__main__":
