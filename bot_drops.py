@@ -77,7 +77,7 @@ _CHEST_CHOICES = [
 
 @bot.tree.command(name="addchestprize", description="Add a custom prize to the chest or VIP chest loot table")
 @app_commands.describe(chest_type="chest or vipchest", name="Prize name",
-                       exp="EXP (0 for none)", balance="Balance (0 for none)", chance="Weight (e.g. 40)")
+                       exp="EXP (0 for none)", balance="Balance (0 for none)", chance="Weight")
 @app_commands.choices(chest_type=_CHEST_CHOICES)
 @command_enabled()
 async def addchestprize(interaction: discord.Interaction, chest_type: str, name: str,
@@ -366,7 +366,7 @@ async def daily_key_loop():
 
 async def _build_chest_embed(guild: discord.Guild) -> discord.Embed:
     embed = discord.Embed(title="📦 Chest Shop",
-                          description="Open chests to win prizes! Results are only visible to you.",
+                          description="Open chests to win prizes!",
                           color=discord.Color.purple())
     for chest_type, label, cost_str in [("chest","📦 EXP Chest","Cost: 1,000 EXP"),
                                          ("vipchest","💎 VIP Chest","Cost: 1 VIP Key")]:
@@ -381,7 +381,7 @@ async def _build_chest_embed(guild: discord.Guild) -> discord.Embed:
             if not desc: desc.append("✨ Special")
             lines.append(f"• **{p['name']}** — {', '.join(desc)} — {pct:.1f}%")
         embed.add_field(name=f"{label} ({cost_str})", value="\n".join(lines) or "*No prizes configured*", inline=False)
-    embed.set_footer(text="Use the buttons below • responses are only visible to you")
+    embed.set_footer(text="Use the buttons below")
     return embed
 
 
@@ -646,10 +646,10 @@ async def cmd_removebox(ctx, *, name: str):
             await db.commit()
     await ctx.send(f"🗑 Removed box **{name}** and all its prizes.")
 
-@bot.tree.command(name="addboxprize", description="Add a prize to an abuse box")
-@app_commands.describe(box="Box name", prize_type="Type of prize", chance="Weight (e.g. 50)",
-                       amount="Amount for balance/exp prizes", item_name="Item name for 'item' prizes",
-                       custom_label="Label for 'nothing'/'custom'")
+@bot.tree.command(name="addboxprize", description="Add a prize to a box")
+@app_commands.describe(box="Box name", prize_type="Type of prize", chance="Weight",
+                       amount="Amount for balance/exp", item_name="Item name for items",
+                       custom_label="Label for nothing/custom")
 @app_commands.choices(prize_type=[
     app_commands.Choice(name="Balance", value="balance"),
     app_commands.Choice(name="EXP", value="exp"),
@@ -719,7 +719,7 @@ async def cmd_listboxes(ctx, *, box: str = None):
         async with db.execute(query, (ctx.guild.id, box) if box else (ctx.guild.id,)) as cur:
             boxes = await cur.fetchall()
     if not boxes: await ctx.send("❌ No boxes found."); return
-    embed = discord.Embed(title="📦 Admin Abuse Boxes", color=discord.Color.orange())
+    embed = discord.Embed(title="📦 Boxes", color=discord.Color.orange())
     for (box_name,) in boxes:
         async with get_db() as db:
             async with db.execute("SELECT id,prize_type,prize_value,chance FROM abuse_box_prizes "
@@ -784,7 +784,7 @@ async def cmd_removerarebox(ctx, box: str, prize_id: int):
     await ctx.send(f"🗑 Prize #{prize_id} in **{box}** is no longer a rare drop.")
 
 
-@bot.tree.command(name="openbox", description="Open one or more abuse boxes from your inventory")
+@bot.tree.command(name="openbox", description="Open boxes from your inventory")
 @app_commands.describe(box="Box name", amount="How many to open (default 1, max 20)")
 @command_enabled()
 async def openbox(interaction: discord.Interaction, box: str, amount: int = 1):
@@ -875,7 +875,7 @@ async def _process_mega_ticket_message(message: discord.Message):
 
 
 @bot.tree.command(name="buytickets",
-                  description="Buy mega raffle tickets (capped per round; chat 3+ words to earn unlimited)")
+                  description="Buy mega raffle tickets")
 @command_enabled()
 async def buytickets(interaction: discord.Interaction, amount: int):
     gid, uid = interaction.guild.id, interaction.user.id
@@ -896,7 +896,7 @@ async def buytickets(interaction: discord.Interaction, amount: int):
             f"❌ You've already bought the maximum **{MEGA_TICKET_CAP}** mega tickets this round."); return
     if amount > remaining_cap:
         await interaction.response.send_message(
-            f"❌ You can only buy **{remaining_cap}** more mega ticket(s) this round (max {MEGA_TICKET_CAP})."); return
+            f"❌ You can only buy **{remaining_cap}** more mega ticket(s) before they reset (max {MEGA_TICKET_CAP})."); return
     price = amount * MEGA_TICKET_PRICE
     bal = await get_balance(gid, uid)
     if bal < price:
