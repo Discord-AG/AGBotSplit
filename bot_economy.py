@@ -19,6 +19,7 @@ from common import (
     disabled_commands, global_disabled_commands, load_disabled_commands,
     prefix_channel_rules, _prefix_channel_allowed, load_prefix_restrictions,
     register_bot_instance, parse_amount,
+    is_blacklisted,
 )
  
 TOKEN = os.getenv("TOKEN_ECONOMY")
@@ -946,6 +947,12 @@ async def trade(interaction: discord.Interaction, user: discord.Member):
         await interaction.response.send_message("❌ Can't trade with yourself.", ephemeral=True); return
     if user.bot:
         await interaction.response.send_message("❌ Can't trade with a bot.", ephemeral=True); return
+    if await is_blacklisted(interaction.guild.id, interaction.user.id):
+        await interaction.response.send_message(
+            "🚫 You're blacklisted from the economy.", ephemeral=True); return
+    if await is_blacklisted(interaction.guild.id, user.id):
+        await interaction.response.send_message(
+            f"🚫 {user.mention} is blacklisted and can't trade.", ephemeral=True); return
     key = (interaction.guild.id, frozenset({interaction.user.id, user.id}))
     if key in trade_sessions:
         await interaction.response.send_message("❌ A trade is already in progress.", ephemeral=True); return
@@ -1257,6 +1264,10 @@ async def cmd_gift(ctx, user: discord.Member, amount: str):
     gid = ctx.guild.id
     bal = await get_balance(gid, ctx.author.id)
     if bal < parsed: await ctx.send("❌ Not enough balance."); return
+    if await is_blacklisted(gid, ctx.author.id):
+        await ctx.send("🚫 You're blacklisted from the economy."); return
+    if await is_blacklisted(gid, user.id):
+        await ctx.send(f"🚫 {user.mention} is blacklisted and can't receive coins."); return
     await add_balance(gid, ctx.author.id, -parsed, bot=bot)
     await add_balance(gid, user.id, parsed, bot=bot)
     await add_stat(gid, ctx.author.id, "gifted_balance", parsed)
@@ -1278,6 +1289,12 @@ async def slash_gift(interaction: discord.Interaction, user: discord.Member, amo
     bal = await get_balance(gid, interaction.user.id)
     if bal < parsed:
         await interaction.response.send_message("❌ Not enough balance.", ephemeral=True); return
+    if await is_blacklisted(gid, interaction.user.id):
+        await interaction.response.send_message(
+            "🚫 You're blacklisted from the economy.", ephemeral=True); return
+    if await is_blacklisted(gid, user.id):
+        await interaction.response.send_message(
+            f"🚫 {user.mention} is blacklisted and can't receive coins.", ephemeral=True); return
     await add_balance(gid, interaction.user.id, -parsed, bot=bot)
     await add_balance(gid, user.id, parsed, bot=bot)
     await add_stat(gid, interaction.user.id, "gifted_balance", parsed)
