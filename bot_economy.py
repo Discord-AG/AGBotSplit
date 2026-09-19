@@ -1452,7 +1452,7 @@ async def slash_removeleaderboardstat(interaction: discord.Interaction, user: di
 
 @bot.tree.command(name="rankspanel", description="Shows the ranks panel")
 async def rankspanelembed(interaction: discord.Interaction):
-    await interaction.response.send_message("ranks panel is being sent")
+    await interaction.response.send_message("ranks panel is being sent", ephemral=True)
 
     embed=discord.Embed(
         title="RANKS",
@@ -1469,7 +1469,7 @@ async def rankspanelembed(interaction: discord.Interaction):
 
 @bot.tree.command(name="guide", description="Shows the NOVA economy guide")
 async def guide(interaction: discord.Interaction):
-    await interaction.response.send_message("NOVA economy guide is being sent")
+    await interaction.response.send_message("NOVA economy guide is being sent", ephemeral=True)
 
     embed = discord.Embed(
         title="NOVA ECONOMY GUIDE",
