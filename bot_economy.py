@@ -1459,12 +1459,12 @@ async def rankspanelembed(interaction: discord.Interaction):
         description="Ranks are updated through your balance.",
         color=discord.Color.red()
     )
-    embed.add_field(name="<@&1539341777268375633> - 250M+", inline=False)
-    embed.add_field(name="<@&1539341855941206036> - 1.5B+", inline=False)
-    embed.add_field(name="<@&1539341829017702531> - 5B+", inline=False)
-    embed.add_field(name="<@&1539341884248555531> - 20B+", inline=False)
+    embed.add_field(name="<@&1539341777268375633>", value="250M+", inline=False)
+    embed.add_field(name="<@&1539341855941206036>", value="1.5B+", inline=False)
+    embed.add_field(name="<@&1539341829017702531>", value="5B+", inline=False)
+    embed.add_field(name="<@&1539341884248555531>", value="20B+", inline=False)
 
-    await interaction.followup.send(embed=embed)
+    await interaction.channel.send(embed=embed)
 
 
 @bot.tree.command(name="guide", description="Shows the NOVA economy guide")
@@ -1509,7 +1509,7 @@ Your balance is your NOVA currency. Keep track of it and use it to trade, save, 
         color=discord.Color.red()
     )
 
-    await interaction.followup.send(embed=embed)
+    await interaction.channel.send(embed=embed)
  
 if __name__ == "__main__":
     bot.run(TOKEN)
