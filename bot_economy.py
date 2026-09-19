@@ -1465,6 +1465,51 @@ async def rankspanelembed(interaction: discord.Interaction):
     embed.add_field(name="<@&1539341884248555531> - 20B+", inline=False)
 
     await interaction.followup.send(embed=embed)
-                  
+
+
+@bot.tree.command(name="guide", description="Shows the NOVA economy guide")
+async def guide(interaction: discord.Interaction):
+    await interaction.response.send_message("NOVA economy guide is being sent")
+
+    embed = discord.Embed(
+        title="NOVA ECONOMY GUIDE",
+        description="""Welcome to NOVA. This guide explains how the economy works and how you can get started.
+
+## EARNING
+
+You can earn NOVA currency through the available economy features.
+
+The more active you are, the more opportunities you have to build your balance.
+
+## TRADING
+
+Your NOVA balance can be used to trade with other members.
+
+You can exchange your balance for items, or trade items you no longer need for NOVA currency.
+
+## CROSS-TRADING
+
+NOVA allows you to trade between different games.
+
+For example, you can trade an item from one game for NOVA currency and use that currency to get an item from another game.
+
+## BALANCE
+
+Your balance is your NOVA currency. Keep track of it and use it to trade, save, or build up your wealth.
+
+## GETTING STARTED
+
+1. Start earning NOVA currency.
+2. Build up your balance.
+3. Find items or trades you're interested in.
+4. Trade with other members.
+5. Keep building your balance.
+
+**The more you trade, the more opportunities you have.**""",
+        color=discord.Color.red()
+    )
+
+    await interaction.followup.send(embed=embed)
+ 
 if __name__ == "__main__":
     bot.run(TOKEN)
