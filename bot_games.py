@@ -2203,10 +2203,11 @@ async def guild_game_loop(guild_id: int):
             if await is_blacklisted(guild_id, winner.id):
                 await channel.send(
                     f"🚫 {winner.mention} answered correctly but is blacklisted "
-                    f"from the economy — no reward given.")
+                    f"from the economy — no reward given."
+                )
                 result_embed = discord.Embed(
-                    title="⏰ Round Over", color=discord.Color.orange(),
-                await channel.send(embed=result_embed))
+                    title="⏰ Round Over", color=discord.Color.orange())
+                await channel.send(embed=result_embed)
                 await asyncio.sleep(interval_seconds)
                 continue
             if game["reward_balance"] > 0:
