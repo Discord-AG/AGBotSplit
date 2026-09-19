@@ -3342,17 +3342,16 @@ async def setinvitepanel(interaction: discord.Interaction, channel: discord.Text
     embed = discord.Embed(
         title="🔗 Invite Rewards",
         description=("Invite people and earn daily coin rewards based on your rank.\n\n"
-                     "**🔗 Get My Link** — create your personal invite\n"
-                     "**📊 My Stats** — your rank, valid/invalid invites, and chest earnings\n"
-                     "**🏆 Leaderboard** — see the top inviters"),
+                     "**🔗 Get My Link** - Invite your friends!\n"
+                     "**📊 My Stats** - Check your stats (invites, rank and gems earned)\n"
+                     "**🏆 Leaderboard** - View the top inviters"),
         color=discord.Color.blurple())
     if tiers:
         embed.add_field(name="🎁 Daily Rewards",
                         value="\n".join(f"Top {mr} → **{r:,}** coins/day" for mr, r in tiers),
                         inline=False)
     embed.add_field(name="💰 Chest Cut",
-                    value=f"You earn **{cut_percent:g}%** of any coins people you invite win from "
-                          f"chests — they keep their full amount.", inline=False)
+                    value=f"You earn **{cut_percent:g}%** of any coins people you invite win from chests.")
     embed.set_footer(text=f"Invites only count if the account is at least {min_age} days old.")
 
     msg = await channel.send(embed=embed, view=InvitePanelView())
