@@ -176,7 +176,7 @@ async def giveaway(interaction: discord.Interaction, prize: str, seconds: int, w
     TEMPLATES = {"gold": discord.Color.gold(), "red": discord.Color.red(),
                  "blue": discord.Color.blue(), "green": discord.Color.green()}
     embed = discord.Embed(title="🎉 GIVEAWAY 🎉",
-        description=(f"React with 🎉 to enter\n\n**Prize:** {prize}\n**Reward:** {reward_summary}\n"
+        description=(f"React 🎉 to enter\n\n**Prize:** {prize}\n**Reward:** {reward_summary}\n"
                      f"**Winners:** {winners}\n**Ends:** <t:{int(end_time.timestamp())}:R>"),
         color=TEMPLATES.get(template, discord.Color.gold()))
     if required_role: embed.add_field(name="Required Role", value=required_role.mention, inline=False)
@@ -273,15 +273,15 @@ async def host(interaction: discord.Interaction,
     end_time = datetime.now(UTC) + timedelta(seconds=_HOST_DURATION)
 
     embed = discord.Embed(
-        title="🎁 HOSTED GIVEAWAY 🎁",
+        title="🎁 GIVEAWAY 🎁",
         description=(
-            f"React with 🎉 to enter\n\n"
+            f"React 🎉 to enter\n\n"
             f"**Prize:** {prize}\n"
             f"**Reward:** 💰 {per_winner:,} coins per winner\n"
             f"**Winners:** {winners}\n"
             f"**Ends:** <t:{int(end_time.timestamp())}:R>"),
         color=discord.Color.purple())
-    embed.set_footer(text=f"Hosted by {interaction.user.display_name} · Total pot: {parsed_amount:,} coins")
+    embed.set_footer(text=f"Hosted by {interaction.user.display_name} · NOVA")
 
     message = await target_channel.send(embed=embed)
     await message.add_reaction("🎉")
@@ -300,11 +300,11 @@ async def host(interaction: discord.Interaction,
 
     await _send_giveaway_game_notify(
         gid, prize, target_channel,
-        extra_line=f"🎁 Hosted by {interaction.user.mention} · Pot: {parsed_amount:,} coins")
+        extra_line=f"🎁 Hosted by {interaction.user.mention}")
 
     await interaction.response.send_message(
-        f"✅ Hosted giveaway posted! **{parsed_amount:,}** coins deducted.\n"
-        f"{winners} winner(s) will each receive **{per_winner:,}** coins.",
+        f"✅ Hosted giveaway posted! **{parsed_amount:,}**\n"
+        f"{winners} winner(s) will each receive **{per_winner:,}**.",
         ephemeral=True)
     asyncio.create_task(giveaway_timer(message.id, _HOST_DURATION))
     await log_event(gid, "giveaway", _log_embed(
@@ -403,7 +403,7 @@ async def end_giveaway(message_id, reroll=False):
     winner_mentions = ", ".join(w.mention for w in winners)
     embed = discord.Embed(title="🎊 Giveaway Ended",
         description=f"**Prize:** {prize_label}\n**Reward:** {reward_summary}\n**Winners:** {winner_mentions}",
-        color=discord.Color.green())
+        color=discord.Color.purple())
     await channel.send(embed=embed)
     await log_event(channel.guild.id, "giveaway", _log_embed(
         "🎊 Giveaway Ended", discord.Color.green(),
@@ -504,8 +504,8 @@ async def auto_giveaway_loop(guild_id: int):
         if ri: reward_parts.append(f"🎒 {riq}x {ri}")
         reward_summary = " + ".join(reward_parts) if reward_parts else "No reward"
 
-        embed = discord.Embed(title="🎉 AUTOMATIC GIVEAWAY 🎉",
-            description=(f"React with 🎉 to enter\n\n**Prize:** {prize}\n**Reward:** {reward_summary}\n"
+        embed = discord.Embed(title="🎉 GIVEAWAY 🎉",
+            description=(f"React 🎉 to enter\n\n**Prize:** {prize}\n**Reward:** {reward_summary}\n"
                          f"**Winners:** {winners}\n**Ends:** <t:{int(end_time.timestamp())}:R>"),
             color=discord.Color.gold())
         msg = await channel.send(embed=embed)
@@ -2151,10 +2151,10 @@ async def guild_game_loop(guild_id: int):
             role = guild_obj.get_role(game["reward_role_id"])
             if role: reward_parts.append(f"👑 {role.mention}")
 
-        embed = discord.Embed(title="🎮 Random Game!", color=discord.Color.teal(),
-            description=f"**{game['name']}**\n\nType your answer in chat!\n⏰ You have **{answer_time} seconds**.")
+        embed = discord.Embed(title="🎮 Guessing Game!", color=discord.Color.teal(),
+            description=f"**{game['name']}**\n\nType your answer!\n⏰ You have **{answer_time} seconds**.")
         if reward_parts:
-            embed.add_field(name="🏆 Winner gets", value=" + ".join(reward_parts), inline=False)
+            embed.add_field(name="🏆 Prize: ", value=" + ".join(reward_parts), inline=False)
         embed.set_footer(text=f"Answer within {answer_time} seconds!")
         await channel.send(embed=embed)
 
@@ -2203,7 +2203,6 @@ async def guild_game_loop(guild_id: int):
                     f"from the economy — no reward given.")
                 result_embed = discord.Embed(
                     title="⏰ Round Over", color=discord.Color.orange(),
-                    description=f"The answer was **{correct_ans}**.")
                 await channel.send(embed=result_embed)
                 await asyncio.sleep(interval_seconds)
                 continue
@@ -2225,13 +2224,12 @@ async def guild_game_loop(guild_id: int):
                 if role and member:
                     try: await member.add_roles(role)
                     except Exception: pass
-            result_embed = discord.Embed(title="🎉 Correct!", color=discord.Color.green(),
+            result_embed = discord.Embed(title="🎉 We Have A Winner!", color=discord.Color.green(),
                 description=f"{winner.mention} got it! The answer was **{correct_ans}**.")
             if reward_parts:
                 result_embed.add_field(name="Reward given", value=" + ".join(reward_parts), inline=False)
         else:
-            result_embed = discord.Embed(title="⏰ Time's Up!", color=discord.Color.red(),
-                description=f"Nobody got it. The answer was **{correct_ans}**.")
+            result_embed = discord.Embed(title="⏰ Time's Up, No winner, It was **{correct_ans}**.", color=discord.Color.red(),
 
         await channel.send(embed=result_embed)
         await asyncio.sleep(interval_seconds)
