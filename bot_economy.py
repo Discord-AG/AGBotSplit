@@ -1459,10 +1459,10 @@ async def rankspanelembed(interaction: discord.Interaction):
         description="Ranks are updated through your balance.",
         color=discord.Color.red()
     )
-    embed.add_field(name="<@&1539341777268375633>", value="250M+", inline=False)
-    embed.add_field(name="<@&1539341855941206036>", value="1.5B+", inline=False)
-    embed.add_field(name="<@&1539341829017702531>", value="5B+", inline=False)
-    embed.add_field(name="<@&1539341884248555531>", value="20B+", inline=False)
+    embed.add_field(name="Novice", value="250M+", inline=False)
+    embed.add_field(name="Celestial", value="1.5B+", inline=False)
+    embed.add_field(name="Elite", value="5B+", inline=False)
+    embed.add_field(name="Royal", value="20B+", inline=False)
 
     await interaction.channel.send(embed=embed)
 
