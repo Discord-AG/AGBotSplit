@@ -43,12 +43,12 @@ async def setup_database():
             await db.execute("""CREATE TABLE IF NOT EXISTS balances(
                 guild_id INTEGER, user_id INTEGER, balance INTEGER DEFAULT 0,
                 PRIMARY KEY(guild_id, user_id))""")
-            await db.execute("""CREATE TABLE IF NOT EXISTS exp_history(
+            await db.execute("""CREATE TABLE IF NOT EXISTS xp_history(
                 guild_id INTEGER, user_id INTEGER, amount INTEGER,
                 timestamp INTEGER, is_bonus INTEGER DEFAULT 0)""")
             await db.execute("""CREATE TABLE IF NOT EXISTS user_stats(
                 guild_id INTEGER, user_id INTEGER,
-                total_exp INTEGER DEFAULT 0, gifted_balance INTEGER DEFAULT 0,
+                total_xp INTEGER DEFAULT 0, gifted_balance INTEGER DEFAULT 0,
                 chests_opened INTEGER DEFAULT 0, mega_tickets_bought INTEGER DEFAULT 0,
                 hosted_balance INTEGER DEFAULT 0,
                 PRIMARY KEY(guild_id, user_id))""")
@@ -58,7 +58,7 @@ async def setup_database():
             await db.execute("""CREATE TABLE IF NOT EXISTS item_store(
                 guild_id INTEGER, item_name TEXT, price INTEGER, role_id INTEGER, description TEXT,
                 PRIMARY KEY(guild_id, item_name))""")
-            await db.execute("""CREATE TABLE IF NOT EXISTS exp_boosts(
+            await db.execute("""CREATE TABLE IF NOT EXISTS xp_boosts(
                 guild_id INTEGER, role_id INTEGER, boost_percent REAL,
                 channel_id INTEGER DEFAULT 0, category_id INTEGER DEFAULT 0,
                 PRIMARY KEY(guild_id, role_id, channel_id, category_id))""")
@@ -77,7 +77,7 @@ async def setup_database():
             await db.execute("""CREATE TABLE IF NOT EXISTS auto_giveaway_pool(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER, prize TEXT,
                 winners INTEGER DEFAULT 1, chance REAL DEFAULT 1.0,
-                reward_balance INTEGER DEFAULT 0, reward_exp INTEGER DEFAULT 0,
+                reward_balance INTEGER DEFAULT 0, reward_xp INTEGER DEFAULT 0,
                 reward_tickets INTEGER DEFAULT 0, reward_gamble_tokens INTEGER DEFAULT 0,
                 reward_vip_keys INTEGER DEFAULT 0, reward_role_id INTEGER DEFAULT 0,
                 reward_item TEXT, reward_item_qty INTEGER DEFAULT 1)""")
@@ -101,7 +101,7 @@ async def setup_database():
                 guild_id INTEGER, name TEXT, prize TEXT, winners INTEGER DEFAULT 1,
                 interval_seconds INTEGER DEFAULT 3600, embed_channel_id INTEGER DEFAULT 0,
                 winners_channel_id INTEGER DEFAULT 0, default_entries INTEGER DEFAULT 0,
-                reward_balance INTEGER DEFAULT 0, reward_exp INTEGER DEFAULT 0,
+                reward_balance INTEGER DEFAULT 0, reward_xp INTEGER DEFAULT 0,
                 reward_tickets INTEGER DEFAULT 0, reward_gamble_tokens INTEGER DEFAULT 0,
                 reward_vip_keys INTEGER DEFAULT 0, reward_role_id INTEGER DEFAULT 0,
                 reward_item TEXT, reward_item_qty INTEGER DEFAULT 1, running INTEGER DEFAULT 0,
@@ -141,7 +141,7 @@ async def setup_database():
  
             await db.execute("""CREATE TABLE IF NOT EXISTS chest_prizes(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER, chest_type TEXT,
-                name TEXT, exp INTEGER DEFAULT 0, balance INTEGER DEFAULT 0, chance REAL)""")
+                name TEXT, xp INTEGER DEFAULT 0, balance INTEGER DEFAULT 0, chance REAL)""")
             await db.execute("""CREATE TABLE IF NOT EXISTS rare_chest_config(
                 guild_id INTEGER, chest_type TEXT, prize_name TEXT,
                 PRIMARY KEY(guild_id, chest_type, prize_name))""")
@@ -163,7 +163,7 @@ async def setup_database():
             # ── Random Games ─────────────────────────────────────────────────
             await db.execute("""CREATE TABLE IF NOT EXISTS games(
                 guild_id INTEGER, game_name TEXT, enabled INTEGER DEFAULT 1,
-                reward_balance INTEGER DEFAULT 0, reward_exp INTEGER DEFAULT 0,
+                reward_balance INTEGER DEFAULT 0, reward_xp INTEGER DEFAULT 0,
                 reward_tickets INTEGER DEFAULT 0, reward_gamble_tokens INTEGER DEFAULT 0,
                 reward_vip_keys INTEGER DEFAULT 0, reward_item TEXT, reward_item_qty INTEGER DEFAULT 1,
                 reward_role_id INTEGER DEFAULT 0, chance REAL DEFAULT 1.0, answer_time INTEGER DEFAULT 30,
@@ -263,8 +263,8 @@ async def setup_database():
             # ── Exchange system ──────────────────────────────────────
             await db.execute("""CREATE TABLE IF NOT EXISTS exchange_config(
                 guild_id INTEGER PRIMARY KEY,
-                coins_to_exp_rate REAL DEFAULT 1.0,
-                exp_to_coins_rate REAL DEFAULT 1.0,
+                coins_to_xp_rate REAL DEFAULT 1.0,
+                xp_to_coins_rate REAL DEFAULT 1.0,
                 ticket_category_id INTEGER DEFAULT 0,
                 enabled INTEGER DEFAULT 1)""")
             await db.execute("""CREATE TABLE IF NOT EXISTS exchange_prizes(
@@ -275,7 +275,7 @@ async def setup_database():
             # ── Economy blacklist ────────────────────────────────────
             await db.execute("""CREATE TABLE IF NOT EXISTS economy_blacklist(
                 guild_id INTEGER, user_id INTEGER,
-                reason TEXT, expires_at INTEGER DEFAULT 0,
+                reason TEXT, xpires_at INTEGER DEFAULT 0,
                 blacklisted_by INTEGER, created_at INTEGER,
                 PRIMARY KEY(guild_id, user_id))""")
 
@@ -347,22 +347,22 @@ TEMPLATES = {
 }
  
 DEFAULT_CHEST_PRIZES = [
-    {"name": "250 EXP",     "exp": 250,   "balance": 0,     "chance": 40},
-    {"name": "450 EXP",     "exp": 450,   "balance": 0,     "chance": 30},
-    {"name": "1k EXP",      "exp": 1000,  "balance": 0,     "chance": 6},
-    {"name": "1k Balance",  "exp": 0,     "balance": 1000,  "chance": 15},
-    {"name": "1 Huge",      "exp": 0,     "balance": 0,     "chance": 4},
-    {"name": "25m Gems",    "exp": 0,     "balance": 0,     "chance": 4},
-    {"name": "40k Balance", "exp": 0,     "balance": 40000, "chance": 1},
+    {"name": "250 xp",     "xp": 250,   "balance": 0,     "chance": 40},
+    {"name": "450 xp",     "xp": 450,   "balance": 0,     "chance": 30},
+    {"name": "1k xp",      "xp": 1000,  "balance": 0,     "chance": 6},
+    {"name": "1k Balance",  "xp": 0,     "balance": 1000,  "chance": 15},
+    {"name": "1 Huge",      "xp": 0,     "balance": 0,     "chance": 4},
+    {"name": "25m Gems",    "xp": 0,     "balance": 0,     "chance": 4},
+    {"name": "40k Balance", "xp": 0,     "balance": 40000, "chance": 1},
 ]
 DEFAULT_VIP_PRIZES = [
-    {"name": "2k EXP",       "exp": 2000,  "balance": 0,      "chance": 28},
-    {"name": "5k EXP",       "exp": 5000,  "balance": 0,      "chance": 18},
-    {"name": "5k Balance",   "exp": 0,     "balance": 5000,   "chance": 18},
-    {"name": "15k Balance",  "exp": 0,     "balance": 15000,  "chance": 12},
-    {"name": "1 Huge",       "exp": 0,     "balance": 0,      "chance": 10},
-    {"name": "25m Gems",     "exp": 0,     "balance": 0,      "chance": 9},
-    {"name": "100k Balance", "exp": 0,     "balance": 100000, "chance": 5},
+    {"name": "2k xp",       "xp": 2000,  "balance": 0,      "chance": 28},
+    {"name": "5k xp",       "xp": 5000,  "balance": 0,      "chance": 18},
+    {"name": "5k Balance",   "xp": 0,     "balance": 5000,   "chance": 18},
+    {"name": "15k Balance",  "xp": 0,     "balance": 15000,  "chance": 12},
+    {"name": "1 Huge",       "xp": 0,     "balance": 0,      "chance": 10},
+    {"name": "25m Gems",     "xp": 0,     "balance": 0,      "chance": 9},
+    {"name": "100k Balance", "xp": 0,     "balance": 100000, "chance": 5},
 ]
 RARE_CHEST_PRIZES = {"1 Huge", "25m Gems", "40k Balance"}
 RARE_VIP_PRIZES   = {"1 Huge", "25m Gems", "100k Balance"}
@@ -677,44 +677,44 @@ async def add_stat(guild_id: int, user_id: int, column: str, amount: int):
  
  
 # ═══════════════════════════════════════════════════════
-# EXP
+# xp
 # ═══════════════════════════════════════════════════════
  
-async def add_exp(guild_id: int, user_id: int, amount: int, is_bonus: bool = False,
+async def add_xp(guild_id: int, user_id: int, amount: int, is_bonus: bool = False,
                   skip_blacklist: bool = False):
     if amount > 0 and not skip_blacklist:
         if await is_blacklisted(guild_id, user_id):
             return
     if amount > 0 and not is_bonus:
-        await add_stat(guild_id, user_id, "total_exp", amount)
+        await add_stat(guild_id, user_id, "total_xp", amount)
     async with db_lock:
         async with get_db() as db:
             await db.execute(
-                "INSERT INTO exp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
+                "INSERT INTO xp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
                 (guild_id, user_id, amount, int(datetime.now(UTC).timestamp()), 1 if is_bonus else 0))
             await db.commit()
  
-async def get_exp(guild_id: int, user_id: int) -> int:
+async def get_xp(guild_id: int, user_id: int) -> int:
     week_ago = int((datetime.now(UTC) - timedelta(days=7)).timestamp())
     async with get_db() as db:
         async with db.execute(
-            "SELECT SUM(amount) FROM exp_history WHERE guild_id=? AND user_id=? AND timestamp>=?",
+            "SELECT SUM(amount) FROM xp_history WHERE guild_id=? AND user_id=? AND timestamp>=?",
             (guild_id, user_id, week_ago)) as cur:
             row = await cur.fetchone()
     return max(row[0] or 0, 0)
  
-async def get_level_exp(guild_id: int, user_id: int) -> int:
+async def get_level_xp(guild_id: int, user_id: int) -> int:
     week_ago = int((datetime.now(UTC) - timedelta(days=7)).timestamp())
     async with get_db() as db:
         async with db.execute(
-            "SELECT SUM(amount) FROM exp_history "
+            "SELECT SUM(amount) FROM xp_history "
             "WHERE guild_id=? AND user_id=? AND timestamp>=? AND amount>0 AND is_bonus=0",
             (guild_id, user_id, week_ago)) as cur:
             row = await cur.fetchone()
     return max(row[0] or 0, 0)
  
 async def get_level(guild_id: int, user_id: int) -> int:
-    return min((await get_level_exp(guild_id, user_id)) // LEVEL_DIVISOR + 1, 100)
+    return min((await get_level_xp(guild_id, user_id)) // LEVEL_DIVISOR + 1, 100)
  
 async def _add_chest_spending(guild_id: int, user_id: int, amount: int):
     week_ago = int((datetime.now(UTC) - timedelta(days=7)).timestamp())
@@ -722,7 +722,7 @@ async def _add_chest_spending(guild_id: int, user_id: int, amount: int):
     async with db_lock:
         async with get_db() as db:
             async with db.execute(
-                "SELECT timestamp, SUM(amount) AS net FROM exp_history "
+                "SELECT timestamp, SUM(amount) AS net FROM xp_history "
                 "WHERE guild_id=? AND user_id=? AND timestamp>=? "
                 "GROUP BY timestamp HAVING SUM(amount) > 0 "
                 "ORDER BY timestamp ASC",
@@ -733,7 +733,7 @@ async def _add_chest_spending(guild_id: int, user_id: int, amount: int):
                     break
                 consume = min(int(net_available), remaining)
                 await db.execute(
-                    "INSERT INTO exp_history(guild_id,user_id,amount,timestamp,is_bonus) "
+                    "INSERT INTO xp_history(guild_id,user_id,amount,timestamp,is_bonus) "
                     "VALUES(?,?,?,?,?)",
                     (guild_id, user_id, -consume, entry_ts, 0))
                 remaining -= consume
@@ -915,7 +915,7 @@ def find_guild(guild_id: int):
  
 async def distribute_prizes(guild, winners, meta):
     prize_balance  = int(meta.get("balance", 0))
-    prize_exp      = int(meta.get("exp", 0))
+    prize_xp      = int(meta.get("xp", 0))
     prize_tickets  = int(meta.get("tickets", 0))
     prize_gamble   = int(meta.get("gamble_tokens", 0))
     prize_vip_keys = int(meta.get("vip_keys", 0))
@@ -925,8 +925,8 @@ async def distribute_prizes(guild, winners, meta):
     for winner in winners:
         if prize_balance > 0:
             await add_balance(guild.id, winner.id, prize_balance)
-        if prize_exp > 0:
-            await add_exp(guild.id, winner.id, prize_exp)
+        if prize_xp > 0:
+            await add_xp(guild.id, winner.id, prize_xp)
         if prize_tickets > 0:
             await add_tickets(guild.id, winner.id, prize_tickets)
         if prize_gamble > 0:
@@ -945,7 +945,7 @@ async def distribute_prizes(guild, winners, meta):
 def build_reward_summary(meta, guild=None) -> str:
     parts = []
     if int(meta.get("balance", 0)) > 0:       parts.append(f"💰 {int(meta['balance']):,} coins")
-    if int(meta.get("exp", 0)) > 0:           parts.append(f"⭐ {int(meta['exp']):,} EXP")
+    if int(meta.get("xp", 0)) > 0:           parts.append(f"⭐ {int(meta['xp']):,} xp")
     if int(meta.get("tickets", 0)) > 0:       parts.append(f"🎟 {meta['tickets']} ticket(s)")
     if int(meta.get("gamble_tokens", 0)) > 0: parts.append(f"🎲 {meta['gamble_tokens']} gamble token(s)")
     if int(meta.get("vip_keys", 0)) > 0:      parts.append(f"🔑 {meta['vip_keys']} VIP key(s)")
@@ -967,9 +967,9 @@ async def _do_reset(guild_id: int, user_id: int, reset_type: str):
                 await db.execute(
                     "UPDATE balances SET balance=0 WHERE guild_id=? AND user_id=?",
                     (guild_id, user_id))
-            if reset_type in ("exp", "all"):
+            if reset_type in ("xp", "all"):
                 await db.execute(
-                    "DELETE FROM exp_history WHERE guild_id=? AND user_id=?",
+                    "DELETE FROM xp_history WHERE guild_id=? AND user_id=?",
                     (guild_id, user_id))
             if reset_type in ("inventory", "all"):
                 await db.execute(
@@ -981,7 +981,7 @@ async def _do_reset(guild_id: int, user_id: int, reset_type: str):
                     (guild_id, user_id))
             if reset_type in ("stats", "all"):
                 await db.execute(
-                    "UPDATE user_stats SET total_exp=0, gifted_balance=0, chests_opened=0, "
+                    "UPDATE user_stats SET total_xp=0, gifted_balance=0, chests_opened=0, "
                     "mega_tickets_bought=0, hosted_balance=0 WHERE guild_id=? AND user_id=?",
                     (guild_id, user_id))
             await db.commit()
@@ -1242,11 +1242,11 @@ async def sync_host_roles(bot, guild_id: int) -> tuple[int, int]:
 
 
 async def get_exchange_config(guild_id: int) -> tuple[float, float, int, int]:
-    """Returns (coins_to_exp_rate, exp_to_coins_rate, ticket_category_id, enabled).
+    """Returns (coins_to_xp_rate, xp_to_coins_rate, ticket_category_id, enabled).
     Creates a default row if none exists."""
     async with get_db() as db:
         async with db.execute(
-            "SELECT coins_to_exp_rate, exp_to_coins_rate, ticket_category_id, enabled "
+            "SELECT coins_to_xp_rate, xp_to_coins_rate, ticket_category_id, enabled "
             "FROM exchange_config WHERE guild_id=?", (guild_id,)) as cur:
             row = await cur.fetchone()
     if row:
@@ -1261,20 +1261,20 @@ async def get_exchange_config(guild_id: int) -> tuple[float, float, int, int]:
 # ── Blacklist ────────────────────────────────────────────────────────────────
 
 async def is_blacklisted(guild_id: int, user_id: int) -> bool:
-    """True if the user is currently blacklisted. Expired entries auto-clear."""
+    """True if the user is currently blacklisted. xpired entries auto-clear."""
     async with get_db() as db:
         async with db.execute(
-            "SELECT expires_at FROM economy_blacklist WHERE guild_id=? AND user_id=?",
+            "SELECT xpires_at FROM economy_blacklist WHERE guild_id=? AND user_id=?",
             (guild_id, user_id)) as cur:
             row = await cur.fetchone()
     if not row:
         return False
-    expires_at = row[0]
-    if expires_at == 0:          # 0 = permanent
+    xpires_at = row[0]
+    if xpires_at == 0:          # 0 = permanent
         return True
-    if expires_at > int(datetime.now(UTC).timestamp()):
+    if xpires_at > int(datetime.now(UTC).timestamp()):
         return True
-    # Expired — clean it up
+    # xpired — clean it up
     async with db_lock:
         async with get_db() as db:
             await db.execute(
@@ -1285,10 +1285,10 @@ async def is_blacklisted(guild_id: int, user_id: int) -> bool:
 
 
 async def get_blacklist_entry(guild_id: int, user_id: int):
-    """Returns (reason, expires_at, blacklisted_by, created_at) or None."""
+    """Returns (reason, xpires_at, blacklisted_by, created_at) or None."""
     async with get_db() as db:
         async with db.execute(
-            "SELECT reason, expires_at, blacklisted_by, created_at "
+            "SELECT reason, xpires_at, blacklisted_by, created_at "
             "FROM economy_blacklist WHERE guild_id=? AND user_id=?",
             (guild_id, user_id)) as cur:
             return await cur.fetchone()
@@ -1298,16 +1298,16 @@ async def add_to_blacklist(guild_id: int, user_id: int, reason: str,
                            duration_seconds: int, by_user_id: int):
     """duration_seconds <= 0 means permanent."""
     now = int(datetime.now(UTC).timestamp())
-    expires_at = 0 if duration_seconds <= 0 else now + duration_seconds
+    xpires_at = 0 if duration_seconds <= 0 else now + duration_seconds
     async with db_lock:
         async with get_db() as db:
             await db.execute(
                 "INSERT INTO economy_blacklist"
-                "(guild_id,user_id,reason,expires_at,blacklisted_by,created_at) "
+                "(guild_id,user_id,reason,xpires_at,blacklisted_by,created_at) "
                 "VALUES(?,?,?,?,?,?) ON CONFLICT(guild_id,user_id) DO UPDATE SET "
-                "reason=excluded.reason, expires_at=excluded.expires_at, "
+                "reason=excluded.reason, xpires_at=excluded.xpires_at, "
                 "blacklisted_by=excluded.blacklisted_by, created_at=excluded.created_at",
-                (guild_id, user_id, reason, expires_at, by_user_id, now))
+                (guild_id, user_id, reason, xpires_at, by_user_id, now))
             await db.commit()
 
 
