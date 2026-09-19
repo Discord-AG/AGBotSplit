@@ -279,10 +279,10 @@ async def host(interaction: discord.Interaction,
             f"**Prize:** {prize}\n"
             f"**Reward:** 💰 {per_winner:,} coins per winner\n"
             f"**Winners:** {winners}\n"
-            f"**Ends:** <t:{int(end_time.timestamp())}:R>")
+            f"**Ends:** <t:{int(end_time.timestamp())}:R>"
             f"Go to <#1549077648305692682> to view your balance"
-            f"Activity rank improves your chances to win giveaways",
-        color=discord.Color.purple())
+            f"Activity rank improves your chances to win giveaways"),
+        color=discord.Color.purple()
     embed.set_footer(text=f"Hosted by {interaction.user.display_name} · NOVA")
 
     message = await target_channel.send(embed=embed)
