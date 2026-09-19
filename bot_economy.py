@@ -9,7 +9,7 @@ import common
 from common import (
     get_db, db_lock, setup_database, log_event, _log_embed, command_enabled,
     is_allowed_to_giveaway, _is_allowed_ctx,
-    get_balance, add_balance, get_exp, add_exp, get_level, get_level_exp,
+    get_balance, add_balance, get_xp, add_xp, get_level, get_level_xp,
     ensure_stats, add_stat,
     inventory_add, inventory_remove, inventory_get, get_item, get_all_items, add_item, remove_item,
     get_tickets, add_tickets, get_gamble_tokens,
@@ -72,59 +72,59 @@ async def cmd_removebalance(ctx, user: discord.Member, amount: str):
         Admin=ctx.author.mention, User=user.mention, Amount=f"-{parsed:,}"))
  
 # ═══════════════════════════════════════════════════════
-# EXP / ACTIVITY RANK
+# xp / ACTIVITY RANK
 # ═══════════════════════════════════════════════════════
  
-@bot.tree.command(name="activityrank", description="Check a user's Activity Rank and EXP")
+@bot.tree.command(name="activityrank", description="Check a user's Activity Rank and xp")
 @command_enabled()
 async def level(interaction: discord.Interaction, user: discord.Member = None):
     user = user or interaction.user
     gid = interaction.guild.id
-    exp    = await get_level_exp(gid, user.id)
-    usable = await get_exp(gid, user.id)
+    xp    = await get_level_xp(gid, user.id)
+    usable = await get_xp(gid, user.id)
     lvl    = await get_level(gid, user.id)
     embed = discord.Embed(title=f"⭐ {user.display_name}'s Activity Rank", color=discord.Color.gold())
     embed.add_field(name="Activity Rank", value=str(lvl), inline=False)
-    embed.add_field(name="Total EXP (7d)", value=f"{exp:,}", inline=False)
-    embed.add_field(name="Usable EXP", value=f"{usable:,}", inline=False)
+    embed.add_field(name="Total xp (7d)", value=f"{xp:,}", inline=False)
+    embed.add_field(name="Usable xp", value=f"{usable:,}", inline=False)
     await interaction.response.send_message(embed=embed)
  
 @bot.command(name="activityrank")
 async def pfx_activityrank(ctx, user: discord.Member = None):
     await level._callback(FakeInteraction(ctx), user)
  
-@bot.command(name="addexp")
-async def cmd_addexp(ctx, user: discord.Member, amount: str):
+@bot.command(name="addxp")
+async def cmd_addxp(ctx, user: discord.Member, amount: str):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
     parsed = parse_amount(amount)
     if parsed is None or parsed <= 0: await ctx.send("❌ Invalid amount."); return
-    await add_exp(ctx.guild.id, user.id, parsed, is_bonus=True)
-    await ctx.send(f"✅ Added **{parsed:,}** usable EXP to {user.mention}.")
+    await add_xp(ctx.guild.id, user.id, parsed, is_bonus=True)
+    await ctx.send(f"✅ Added **{parsed:,}** usable xp to {user.mention}.")
 
-@bot.command(name="removeexp")
-async def cmd_removeexp(ctx, user: discord.Member, amount: str):
+@bot.command(name="removxp")
+async def cmd_removxp(ctx, user: discord.Member, amount: str):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
     parsed = parse_amount(amount)
     if parsed is None or parsed <= 0: await ctx.send("❌ Invalid amount."); return
-    await add_exp(ctx.guild.id, user.id, -parsed)
-    await ctx.send(f"❌ Removed {parsed:,} EXP from {user.mention}.")
+    await add_xp(ctx.guild.id, user.id, -parsed)
+    await ctx.send(f"❌ Removed {parsed:,} xp from {user.mention}.")
  
-@bot.command(name="addtotalexp")
-async def cmd_addtotalexp(ctx, user: discord.Member, amount: int):
+@bot.command(name="addtotalxp")
+async def cmd_addtotalxp(ctx, user: discord.Member, amount: int):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
     if amount <= 0: await ctx.send("❌ Amount must be > 0."); return
     now = int(datetime.now(UTC).timestamp())
     async with db_lock:
         async with get_db() as db:
-            await db.execute("INSERT INTO exp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
+            await db.execute("INSERT INTO xp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
                              (ctx.guild.id, user.id, amount, now, 0))
-            await db.execute("INSERT INTO exp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
+            await db.execute("INSERT INTO xp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
                              (ctx.guild.id, user.id, -amount, now, 0))
             await db.commit()
-    await ctx.send(f"✅ Added **{amount:,}** to {user.mention}'s Total EXP (7d) / Activity Rank. Usable EXP unchanged.")
+    await ctx.send(f"✅ Added **{amount:,}** to {user.mention}'s Total xp (7d) / Activity Rank. Usable xp unchanged.")
  
-@bot.command(name="removetotalexp")
-async def cmd_removetotalexp(ctx, user: discord.Member, amount: int):
+@bot.command(name="removetotalxp")
+async def cmd_removetotalxp(ctx, user: discord.Member, amount: int):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
     if amount <= 0: await ctx.send("❌ Amount must be > 0."); return
     week_ago = int((datetime.now(UTC) - timedelta(days=7)).timestamp())
@@ -132,43 +132,43 @@ async def cmd_removetotalexp(ctx, user: discord.Member, amount: int):
     async with db_lock:
         async with get_db() as db:
             async with db.execute(
-                "SELECT rowid, amount FROM exp_history "
+                "SELECT rowid, amount FROM xp_history "
                 "WHERE guild_id=? AND user_id=? AND timestamp>=? AND amount>0 AND is_bonus=0 "
                 "ORDER BY timestamp ASC", (ctx.guild.id, user.id, week_ago)) as cur:
                 entries = await cur.fetchall()
             for rowid, entry_amount in entries:
                 if remaining <= 0: break
                 if entry_amount <= remaining:
-                    await db.execute("DELETE FROM exp_history WHERE rowid=?", (rowid,))
+                    await db.execute("DELETE FROM xp_history WHERE rowid=?", (rowid,))
                     remaining -= entry_amount
                 else:
-                    await db.execute("UPDATE exp_history SET amount=? WHERE rowid=?",
+                    await db.execute("UPDATE xp_history SET amount=? WHERE rowid=?",
                                      (entry_amount - remaining, rowid)); remaining = 0
             actually_removed = amount - remaining
             if actually_removed > 0:
                 await db.execute(
-                    "INSERT INTO exp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
+                    "INSERT INTO xp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
                     (ctx.guild.id, user.id, actually_removed, int(datetime.now(UTC).timestamp()), 1))
             await db.commit()
     if actually_removed == 0:
-        await ctx.send(f"❌ {user.mention} has no Total EXP (7d) to remove.")
+        await ctx.send(f"❌ {user.mention} has no Total xp (7d) to remove.")
     else:
-        await ctx.send(f"✅ Removed **{actually_removed:,}** from {user.mention}'s Total EXP (7d). Usable EXP unchanged.")
-    await log_event(ctx.guild.id, "exp", _log_embed("📉 Total EXP Removed", discord.Color.orange(),
+        await ctx.send(f"✅ Removed **{actually_removed:,}** from {user.mention}'s Total xp (7d). Usable xp unchanged.")
+    await log_event(ctx.guild.id, "xp", _log_embed("📉 Total xp Removed", discord.Color.orange(),
         Admin=ctx.author.mention, User=user.mention,
         Removed=f"-{actually_removed:,}", Requested=f"-{amount:,}"))
  
 # ═══════════════════════════════════════════════════════
-# EXP BOOSTS
+# xp BOOSTS
 # ═══════════════════════════════════════════════════════
  
-@bot.tree.command(name="expboost",
-                  description="Set an EXP boost for a role — optionally limit it to a channel or category")
+@bot.tree.command(name="xpboost",
+                  description="Set an xp boost for a role — optionally limit it to a channel or category")
 @app_commands.describe(
     role="Role to boost", boost="e.g. 1.5 = +1.5%, -25 = penalty. All matching boosts are summed.",
     channel="Only apply in this channel", category="Only apply in this category")
 @command_enabled()
-async def expboost(interaction: discord.Interaction, role: discord.Role, boost: float,
+async def xpboost(interaction: discord.Interaction, role: discord.Role, boost: float,
                    channel: discord.TextChannel = None, category: discord.CategoryChannel = None):
     if not await is_allowed_to_giveaway(interaction):
         await interaction.response.send_message("❌ No permission.", ephemeral=True); return
@@ -180,7 +180,7 @@ async def expboost(interaction: discord.Interaction, role: discord.Role, boost: 
     category_id = category.id if category else 0
     async with db_lock:
         async with get_db() as db:
-            await db.execute("INSERT OR REPLACE INTO exp_boosts VALUES(?,?,?,?,?)",
+            await db.execute("INSERT OR REPLACE INTO xp_boosts VALUES(?,?,?,?,?)",
                              (interaction.guild.id, role.id, boost, channel_id, category_id))
             await db.commit()
     sign  = "+" if boost > 0 else ""
@@ -188,19 +188,19 @@ async def expboost(interaction: discord.Interaction, role: discord.Role, boost: 
     if channel:   scope = f"in {channel.mention} only"
     elif category: scope = f"in the **{category.name}** category only"
     await interaction.response.send_message(
-        f"✅ {role.mention} now earns **{sign}{boost}% EXP** per message {scope}.")
+        f"✅ {role.mention} now earns **{sign}{boost}% xp** per message {scope}.")
  
-@bot.command(name="expboost")
-async def pfx_expboost(ctx, role: discord.Role, boost: float, channel: discord.TextChannel = None):
+@bot.command(name="xpboost")
+async def pfx_xpboost(ctx, role: discord.Role, boost: float, channel: discord.TextChannel = None):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    await expboost._callback(FakeInteraction(ctx), role, boost, channel, None)
+    await xpboost._callback(FakeInteraction(ctx), role, boost, channel, None)
  
  
-@bot.tree.command(name="removeexpboost",
-                  description="Remove an EXP boost — specify the same scope used when it was set")
+@bot.tree.command(name="removxpboost",
+                  description="Remove an xp boost — specify the same scope used when it was set")
 @app_commands.describe(role="Role to remove boost from", channel="Channel-specific boost", category="Category-specific boost")
 @command_enabled()
-async def removeexpboost(interaction: discord.Interaction, role: discord.Role,
+async def removxpboost(interaction: discord.Interaction, role: discord.Role,
                           channel: discord.TextChannel = None, category: discord.CategoryChannel = None):
     if not await is_allowed_to_giveaway(interaction):
         await interaction.response.send_message("❌ No permission.", ephemeral=True); return
@@ -211,23 +211,23 @@ async def removeexpboost(interaction: discord.Interaction, role: discord.Role,
     async with db_lock:
         async with get_db() as db:
             await db.execute(
-                "DELETE FROM exp_boosts WHERE guild_id=? AND role_id=? AND channel_id=? AND category_id=?",
+                "DELETE FROM xp_boosts WHERE guild_id=? AND role_id=? AND channel_id=? AND category_id=?",
                 (interaction.guild.id, role.id, channel_id, category_id))
             await db.commit()
     scope = "global"
     if channel:   scope = f"channel {channel.mention}"
     elif category: scope = f"category **{category.name}**"
-    await interaction.response.send_message(f"🗑 Removed {scope} EXP boost from {role.mention}.")
+    await interaction.response.send_message(f"🗑 Removed {scope} xp boost from {role.mention}.")
  
-@bot.command(name="removeexpboost")
-async def pfx_removeexpboost(ctx, role: discord.Role, channel: discord.TextChannel = None):
+@bot.command(name="removxpboost")
+async def pfx_removxpboost(ctx, role: discord.Role, channel: discord.TextChannel = None):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    await removeexpboost._callback(FakeInteraction(ctx), role, channel, None)
+    await removxpboost._callback(FakeInteraction(ctx), role, channel, None)
  
  
-_EXP_BOOSTS_PER_EMBED = 20
+_xp_BOOSTS_PER_EMBED = 20
  
-def _build_exp_boost_embeds(guild, rows: list) -> list:
+def _build_xp_boost_embeds(guild, rows: list) -> list:
     lines = []
     for role_id, boost, channel_id, category_id in rows:
         role = guild.get_role(role_id)
@@ -242,29 +242,29 @@ def _build_exp_boost_embeds(guild, rows: list) -> list:
         else:
             scope = "🌐 Global"
         lines.append(f"• {name} — **{sign}{boost}%** | {scope}")
-    chunks = [lines[i:i+_EXP_BOOSTS_PER_EMBED] for i in range(0, len(lines), _EXP_BOOSTS_PER_EMBED)]
+    chunks = [lines[i:i+_xp_BOOSTS_PER_EMBED] for i in range(0, len(lines), _xp_BOOSTS_PER_EMBED)]
     total_pages = len(chunks)
     embeds = []
     for i, chunk in enumerate(chunks):
-        title = "⚡ Active EXP Boosts" + (f"  ({i+1}/{total_pages})" if total_pages > 1 else "")
+        title = "⚡ Active xp Boosts" + (f"  ({i+1}/{total_pages})" if total_pages > 1 else "")
         embed = discord.Embed(title=title, description="\n".join(chunk), color=discord.Color.blurple())
         if i == total_pages - 1:
             embed.set_footer(text=f"{len(rows)} boost(s) total")
         embeds.append(embed)
     return embeds
  
-@bot.tree.command(name="listexpboosts", description="List all active EXP boosts for this server")
+@bot.tree.command(name="listxpboosts", description="List all active xp boosts for this server")
 @command_enabled()
-async def slash_listexpboosts(interaction: discord.Interaction):
+async def slash_listxpboosts(interaction: discord.Interaction):
     try:
         async with get_db() as db:
             async with db.execute(
-                "SELECT role_id, boost_percent, channel_id, category_id FROM exp_boosts "
+                "SELECT role_id, boost_percent, channel_id, category_id FROM xp_boosts "
                 "WHERE guild_id=? ORDER BY boost_percent DESC", (interaction.guild.id,)) as cur:
                 rows = await cur.fetchall()
         if not rows:
-            await interaction.response.send_message("❌ No EXP boosts configured.", ephemeral=True); return
-        embeds = _build_exp_boost_embeds(interaction.guild, rows)
+            await interaction.response.send_message("❌ No xp boosts configured.", ephemeral=True); return
+        embeds = _build_xp_boost_embeds(interaction.guild, rows)
         await interaction.response.send_message(embeds=embeds[:10])
         for extra in embeds[10:]:
             await interaction.followup.send(embed=extra)
@@ -272,22 +272,22 @@ async def slash_listexpboosts(interaction: discord.Interaction):
         try: await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
         except Exception: await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
  
-@bot.command(name="listexpboosts")
-async def cmd_listexpboosts(ctx):
+@bot.command(name="listxpboosts")
+async def cmd_listxpboosts(ctx):
     try:
         async with get_db() as db:
             async with db.execute(
-                "SELECT role_id, boost_percent, channel_id, category_id FROM exp_boosts "
+                "SELECT role_id, boost_percent, channel_id, category_id FROM xp_boosts "
                 "WHERE guild_id=? ORDER BY boost_percent DESC", (ctx.guild.id,)) as cur:
                 rows = await cur.fetchall()
         if not rows:
-            await ctx.send("❌ No EXP boosts configured."); return
-        embeds = _build_exp_boost_embeds(ctx.guild, rows)
+            await ctx.send("❌ No xp boosts configured."); return
+        embeds = _build_xp_boost_embeds(ctx.guild, rows)
         await ctx.send(embeds=embeds[:10])
         for extra in embeds[10:]:
             await ctx.send(embed=extra)
     except Exception as e:
-        await ctx.send(f"❌ Error fetching EXP boosts: {e}")
+        await ctx.send(f"❌ Error fetching xp boosts: {e}")
  
 # ═══════════════════════════════════════════════════════
 # LEADERBOARD
@@ -350,8 +350,8 @@ class LeaderboardView(discord.ui.View):
  
 @bot.tree.command(name="leaderboard", description="View leaderboards")
 @app_commands.choices(category=[
-    app_commands.Choice(name="Total EXP", value="total_exp"),
-    app_commands.Choice(name="Usable EXP", value="current_exp"),
+    app_commands.Choice(name="Total xp", value="total_xp"),
+    app_commands.Choice(name="Usable xp", value="current_xp"),
     app_commands.Choice(name="Balance", value="balance"),
     app_commands.Choice(name="Lifetime Mega Tickets", value="mega_tickets_bought"),
     app_commands.Choice(name="Current Mega Tickets", value="current_tickets"),
@@ -369,9 +369,9 @@ async def leaderboard(interaction: discord.Interaction, category: app_commands.C
  
     all_data = []
     async with get_db() as db:
-        if value == "current_exp":
+        if value == "current_xp":
             async with db.execute(
-                "SELECT user_id, SUM(amount) FROM exp_history "
+                "SELECT user_id, SUM(amount) FROM xp_history "
                 "WHERE guild_id=? AND timestamp>=? GROUP BY user_id "
                 "HAVING SUM(amount)>0 ORDER BY SUM(amount) DESC", (gid, week_ago)) as cur:
                 all_data = [(uid, int(amt)) for uid, amt in await cur.fetchall()]
@@ -401,7 +401,7 @@ async def leaderboard(interaction: discord.Interaction, category: app_commands.C
             break
  
     title_map = {
-        "total_exp": "🏆 Total EXP", "current_exp": "⭐ Usable EXP", "balance": "💰 Balance",
+        "total_xp": "🏆 Total xp", "current_xp": "⭐ Usable xp", "balance": "💰 Balance",
         "mega_tickets_bought": "🎟 Lifetime Mega Tickets", "current_tickets": "🎫 Current Mega Tickets",
         "chests_opened": "📦 Chests Opened", "gifted_balance": "💸 Gifted Balance",
         "hosted_balance": "🎁 Hosted Balance Given Away",
@@ -414,14 +414,14 @@ async def leaderboard(interaction: discord.Interaction, category: app_commands.C
  
 @bot.command(name="leaderboard")
 async def pfx_leaderboard(ctx, category: str = "balance", page: int = 1):
-    _valid = {"total_exp","current_exp","balance","mega_tickets_bought",
+    _valid = {"total_xp","current_xp","balance","mega_tickets_bought",
               "current_tickets","chests_opened","gifted_balance","hosted_balance"}
     if category not in _valid:
         await ctx.send(f"❌ Valid categories: {', '.join(sorted(_valid))}"); return
     await leaderboard._callback(FakeInteraction(ctx), _MC(category), page)
  
  
-_VALID_STATS = {"total_exp", "gifted_balance", "chests_opened", "mega_tickets_bought", "hosted_balance"}
+_VALID_STATS = {"total_xp", "gifted_balance", "chests_opened", "mega_tickets_bought", "hosted_balance"}
  
 @bot.command(name="addleaderboardstat")
 async def cmd_addleaderboardstat(ctx, user: discord.Member, stat: str, amount: int):
@@ -579,7 +579,7 @@ async def pfx_refreshbalanceranks(ctx):
  
  
 @bot.tree.command(name="checkbalancerank",
-                  description="Diagnose why a user might not have their expected balance rank")
+                  description="Diagnose why a user might not have their xpected balance rank")
 @app_commands.describe(user="User to check (defaults to yourself)")
 @command_enabled()
 async def checkbalancerank(interaction: discord.Interaction, user: discord.Member = None):
@@ -678,11 +678,11 @@ class StatsChannelView(discord.ui.View):
     @discord.ui.button(label="⭐ Activity Rank", style=discord.ButtonStyle.secondary, custom_id="stats_panel:rank", row=0)
     async def check_rank(self, interaction: discord.Interaction, btn):
         gid, uid = interaction.guild.id, interaction.user.id
-        exp = await get_level_exp(gid, uid); usable = await get_exp(gid, uid); lvl = await get_level(gid, uid)
+        xp = await get_level_xp(gid, uid); usable = await get_xp(gid, uid); lvl = await get_level(gid, uid)
         embed = discord.Embed(title=f"⭐ {interaction.user.display_name}'s Activity Rank", color=discord.Color.gold())
         embed.add_field(name="Activity Rank", value=str(lvl), inline=True)
-        embed.add_field(name="Total EXP (7d)", value=f"{exp:,}", inline=True)
-        embed.add_field(name="Usable EXP", value=f"{usable:,}", inline=True)
+        embed.add_field(name="Total xp (7d)", value=f"{xp:,}", inline=True)
+        embed.add_field(name="Usable xp", value=f"{usable:,}", inline=True)
         embed.add_field(name="Chests Available", value=f"{usable // common.CHEST_COST}", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
  
@@ -763,13 +763,13 @@ trade_sessions: dict = {}
  
 class TradeOffer:
     def __init__(self):
-        self.balance = 0; self.exp = 0; self.tickets = 0
+        self.balance = 0; self.xp = 0; self.tickets = 0
         self.items: list[tuple[str, int]] = []
  
     def display(self) -> str:
         lines = []
         if self.balance > 0: lines.append(f"💰 {self.balance:,} coins")
-        if self.exp > 0:     lines.append(f"⭐ {self.exp:,} EXP")
+        if self.xp > 0:     lines.append(f"⭐ {self.xp:,} xp")
         if self.tickets > 0: lines.append(f"🎟 {self.tickets:,} ticket(s)")
         for n, q in self.items: lines.append(f"🎒 {q}x {n}")
         return "\n".join(lines) if lines else "*Nothing*"
@@ -800,7 +800,7 @@ class TradeSession:
  
 class TradeOfferModal(discord.ui.Modal, title="Set Your Trade Offer"):
     balance_input = discord.ui.TextInput(label="Balance to offer (0 for none)", default="0", max_length=20)
-    exp_input     = discord.ui.TextInput(label="EXP to offer (0 for none)", default="0", max_length=20)
+    xp_input     = discord.ui.TextInput(label="xp to offer (0 for none)", default="0", max_length=20)
     tickets_input = discord.ui.TextInput(label="Mega tickets (0 for none)", default="0", max_length=20)
     items_input   = discord.ui.TextInput(label="Items/boxes (blank for none)",
                                          placeholder="Name:qty, Name2:qty2", required=False, max_length=300)
@@ -814,9 +814,9 @@ class TradeOfferModal(discord.ui.Modal, title="Set Your Trade Offer"):
         try: balance = max(0, int(self.balance_input.value.strip()))
         except ValueError:
             await interaction.response.send_message("❌ Invalid balance.", ephemeral=True); return
-        try: exp = max(0, int(self.exp_input.value.strip()))
+        try: xp = max(0, int(self.xp_input.value.strip()))
         except ValueError:
-            await interaction.response.send_message("❌ Invalid EXP.", ephemeral=True); return
+            await interaction.response.send_message("❌ Invalid xp.", ephemeral=True); return
         try: tickets = max(0, int(self.tickets_input.value.strip()))
         except ValueError:
             await interaction.response.send_message("❌ Invalid tickets.", ephemeral=True); return
@@ -834,8 +834,8 @@ class TradeOfferModal(discord.ui.Modal, title="Set Your Trade Offer"):
             items.append((iname.strip(), qty))
         if balance > 0 and await get_balance(interaction.guild.id, uid) < balance:
             await interaction.response.send_message("❌ Not enough coins.", ephemeral=True); return
-        if exp > 0 and await get_exp(interaction.guild.id, uid) < exp:
-            await interaction.response.send_message("❌ Not enough EXP.", ephemeral=True); return
+        if xp > 0 and await get_xp(interaction.guild.id, uid) < xp:
+            await interaction.response.send_message("❌ Not enough xp.", ephemeral=True); return
         if tickets > 0 and await get_tickets(session.guild_id, uid) < tickets:
             await interaction.response.send_message("❌ Not enough tickets.", ephemeral=True); return
         if items:
@@ -844,7 +844,7 @@ class TradeOfferModal(discord.ui.Modal, title="Set Your Trade Offer"):
                 if inv.get(n.lower(), 0) < q:
                     await interaction.response.send_message(f"❌ Not enough {n}.", ephemeral=True); return
         offer = TradeOffer()
-        offer.balance, offer.exp, offer.tickets, offer.items = balance, exp, tickets, items
+        offer.balance, offer.xp, offer.tickets, offer.items = balance, xp, tickets, items
         session.offers[uid] = offer; session.confirmed[uid] = False
         await session.message.edit(embed=session.build_embed(interaction.guild), view=TradeView(session))
         await interaction.response.send_message("✅ Offer updated!", ephemeral=True)
@@ -902,7 +902,7 @@ class TradeView(discord.ui.View):
             if self.session.message:
                 try:
                     await self.session.message.edit(
-                        embed=discord.Embed(title="⏰ Trade Expired", color=discord.Color.light_grey()), view=None)
+                        embed=discord.Embed(title="⏰ Trade xpired", color=discord.Color.light_grey()), view=None)
                 except Exception: pass
  
  
@@ -912,8 +912,8 @@ async def execute_trade(session) -> tuple[bool, str]:
     for uid, offer in [(iid, session.offers[iid]), (tid, session.offers[tid])]:
         if offer.balance > 0 and await get_balance(gid, uid) < offer.balance:
             return False, f"<@{uid}> no longer has enough coins."
-        if offer.exp > 0 and await get_exp(gid, uid) < offer.exp:
-            return False, f"<@{uid}> no longer has enough EXP."
+        if offer.xp > 0 and await get_xp(gid, uid) < offer.xp:
+            return False, f"<@{uid}> no longer has enough xp."
         if offer.tickets > 0 and await get_tickets(gid, uid) < offer.tickets:
             return False, f"<@{uid}> no longer has enough tickets."
         inv = {n.lower(): q for n, q in await inventory_get(gid, uid)}
@@ -923,8 +923,8 @@ async def execute_trade(session) -> tuple[bool, str]:
     io, to = session.offers[iid], session.offers[tid]
     if io.balance > 0: await add_balance(gid, iid, -io.balance, bot=bot); await add_balance(gid, tid, io.balance, bot=bot)
     if to.balance > 0: await add_balance(gid, tid, -to.balance, bot=bot); await add_balance(gid, iid, to.balance, bot=bot)
-    if io.exp > 0: await add_exp(gid, iid, -io.exp); await add_exp(gid, tid, io.exp)
-    if to.exp > 0: await add_exp(gid, tid, -to.exp); await add_exp(gid, iid, to.exp)
+    if io.xp > 0: await add_xp(gid, iid, -io.xp); await add_xp(gid, tid, io.xp)
+    if to.xp > 0: await add_xp(gid, tid, -to.xp); await add_xp(gid, iid, to.xp)
     if io.tickets > 0: await add_tickets(gid, iid, -io.tickets); await add_tickets(gid, tid, io.tickets)
     if to.tickets > 0: await add_tickets(gid, tid, -to.tickets); await add_tickets(gid, iid, to.tickets)
     for n, q in io.items: await inventory_remove(gid, iid, n, q); await inventory_add(gid, tid, n, q)
@@ -1329,35 +1329,35 @@ async def slash_removebalance(interaction: discord.Interaction, user: discord.Me
     await add_balance(interaction.guild.id, user.id, -parsed, bot=bot)
     await interaction.response.send_message(f"❌ Removed {parsed:,} coins from {user.mention}.")
  
-# ── EXP admin ────────────────────────────────────────────────────────────────
-@bot.tree.command(name="addexp", description="Admin: add usable EXP to a user")
+# ── xp admin ────────────────────────────────────────────────────────────────
+@bot.tree.command(name="addxp", description="Admin: add usable xp to a user")
 @app_commands.describe(user="Target user", amount="Amount — supports 1k, 1m, 1b, etc.")
 @command_enabled()
-async def slash_addexp(interaction: discord.Interaction, user: discord.Member, amount: str):
+async def slash_addxp(interaction: discord.Interaction, user: discord.Member, amount: str):
     if not await is_allowed_to_giveaway(interaction):
         await interaction.response.send_message("❌ No permission.", ephemeral=True); return
     parsed = parse_amount(amount)
     if parsed is None or parsed <= 0:
         await interaction.response.send_message("❌ Invalid amount.", ephemeral=True); return
-    await add_exp(interaction.guild.id, user.id, parsed, is_bonus=True)
-    await interaction.response.send_message(f"✅ Added **{parsed:,}** usable EXP to {user.mention}.")
+    await add_xp(interaction.guild.id, user.id, parsed, is_bonus=True)
+    await interaction.response.send_message(f"✅ Added **{parsed:,}** usable xp to {user.mention}.")
 
-@bot.tree.command(name="removeexp", description="Admin: remove usable EXP from a user")
+@bot.tree.command(name="removxp", description="Admin: remove usable xp from a user")
 @app_commands.describe(user="Target user", amount="Amount — supports 1k, 1m, 1b, etc.")
 @command_enabled()
-async def slash_removeexp(interaction: discord.Interaction, user: discord.Member, amount: str):
+async def slash_removxp(interaction: discord.Interaction, user: discord.Member, amount: str):
     if not await is_allowed_to_giveaway(interaction):
         await interaction.response.send_message("❌ No permission.", ephemeral=True); return
     parsed = parse_amount(amount)
     if parsed is None or parsed <= 0:
         await interaction.response.send_message("❌ Invalid amount.", ephemeral=True); return
-    await add_exp(interaction.guild.id, user.id, -parsed)
-    await interaction.response.send_message(f"❌ Removed {parsed:,} EXP from {user.mention}.")
+    await add_xp(interaction.guild.id, user.id, -parsed)
+    await interaction.response.send_message(f"❌ Removed {parsed:,} xp from {user.mention}.")
 
-@bot.tree.command(name="addtotalexp", description="Admin: add Total EXP (Activity Rank only, usable unchanged)")
-@app_commands.describe(user="Target user", amount="EXP to add to rank")
+@bot.tree.command(name="addtotalxp", description="Admin: add Total xp (Activity Rank only, usable unchanged)")
+@app_commands.describe(user="Target user", amount="xp to add to rank")
 @command_enabled()
-async def slash_addtotalexp(interaction: discord.Interaction, user: discord.Member, amount: int):
+async def slash_addtotalxp(interaction: discord.Interaction, user: discord.Member, amount: int):
     if not await is_allowed_to_giveaway(interaction):
         await interaction.response.send_message("❌ No permission.", ephemeral=True); return
     if amount <= 0:
@@ -1365,18 +1365,18 @@ async def slash_addtotalexp(interaction: discord.Interaction, user: discord.Memb
     now = int(datetime.now(UTC).timestamp())
     async with db_lock:
         async with get_db() as db:
-            await db.execute("INSERT INTO exp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
+            await db.execute("INSERT INTO xp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
                              (interaction.guild.id, user.id, amount, now, 0))
-            await db.execute("INSERT INTO exp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
+            await db.execute("INSERT INTO xp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
                              (interaction.guild.id, user.id, -amount, now, 0))
             await db.commit()
     await interaction.response.send_message(
-        f"✅ Added **{amount:,}** to {user.mention}'s Total EXP (7d). Usable EXP unchanged.")
+        f"✅ Added **{amount:,}** to {user.mention}'s Total xp (7d). Usable xp unchanged.")
 
-@bot.tree.command(name="removetotalexp", description="Admin: remove Total EXP (Activity Rank only)")
-@app_commands.describe(user="Target user", amount="EXP to remove from rank")
+@bot.tree.command(name="removetotalxp", description="Admin: remove Total xp (Activity Rank only)")
+@app_commands.describe(user="Target user", amount="xp to remove from rank")
 @command_enabled()
-async def slash_removetotalexp(interaction: discord.Interaction, user: discord.Member, amount: int):
+async def slash_removetotalxp(interaction: discord.Interaction, user: discord.Member, amount: int):
     if not await is_allowed_to_giveaway(interaction):
         await interaction.response.send_message("❌ No permission.", ephemeral=True); return
     await interaction.response.defer()
@@ -1388,34 +1388,34 @@ async def slash_removetotalexp(interaction: discord.Interaction, user: discord.M
     async with db_lock:
         async with get_db() as db:
             async with db.execute(
-                "SELECT rowid, amount FROM exp_history "
+                "SELECT rowid, amount FROM xp_history "
                 "WHERE guild_id=? AND user_id=? AND timestamp>=? AND amount>0 AND is_bonus=0 "
                 "ORDER BY timestamp ASC", (interaction.guild.id, user.id, week_ago)) as cur:
                 entries = await cur.fetchall()
             for rowid, entry_amount in entries:
                 if remaining <= 0: break
                 if entry_amount <= remaining:
-                    await db.execute("DELETE FROM exp_history WHERE rowid=?", (rowid,))
+                    await db.execute("DELETE FROM xp_history WHERE rowid=?", (rowid,))
                     remaining -= entry_amount
                 else:
-                    await db.execute("UPDATE exp_history SET amount=? WHERE rowid=?",
+                    await db.execute("UPDATE xp_history SET amount=? WHERE rowid=?",
                                      (entry_amount - remaining, rowid)); remaining = 0
             actually_removed = amount - remaining
             if actually_removed > 0:
-                await db.execute("INSERT INTO exp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
+                await db.execute("INSERT INTO xp_history(guild_id,user_id,amount,timestamp,is_bonus) VALUES(?,?,?,?,?)",
                                  (interaction.guild.id, user.id, actually_removed, int(datetime.now(UTC).timestamp()), 1))
             await db.commit()
     if actually_removed == 0:
-        await interaction.followup.send(f"❌ {user.mention} has no Total EXP (7d) to remove.")
+        await interaction.followup.send(f"❌ {user.mention} has no Total xp (7d) to remove.")
     else:
         await interaction.followup.send(
-            f"✅ Removed **{actually_removed:,}** from {user.mention}'s Total EXP (7d). Usable EXP unchanged.")
+            f"✅ Removed **{actually_removed:,}** from {user.mention}'s Total xp (7d). Usable xp unchanged.")
 
 # ── leaderboard stat admin ───────────────────────────────────────────────────
 @bot.tree.command(name="addleaderboardstat", description="Admin: manually add to a user's leaderboard stat")
 @app_commands.describe(user="Target user", stat="Which stat to add to", amount="Amount to add")
 @app_commands.choices(stat=[app_commands.Choice(name=s.replace("_"," ").title(), value=s) for s in
-                             ("total_exp","gifted_balance","chests_opened","mega_tickets_bought","hosted_balance")])
+                             ("total_xp","gifted_balance","chests_opened","mega_tickets_bought","hosted_balance")])
 @command_enabled()
 async def slash_addleaderboardstat(interaction: discord.Interaction, user: discord.Member,
                                    stat: str, amount: int):
@@ -1434,7 +1434,7 @@ async def slash_addleaderboardstat(interaction: discord.Interaction, user: disco
 @bot.tree.command(name="removeleaderboardstat", description="Admin: remove from a user's leaderboard stat")
 @app_commands.describe(user="Target user", stat="Which stat to remove from", amount="Amount to remove")
 @app_commands.choices(stat=[app_commands.Choice(name=s.replace("_"," ").title(), value=s) for s in
-                             ("total_exp","gifted_balance","chests_opened","mega_tickets_bought","hosted_balance")])
+                             ("total_xp","gifted_balance","chests_opened","mega_tickets_bought","hosted_balance")])
 @command_enabled()
 async def slash_removeleaderboardstat(interaction: discord.Interaction, user: discord.Member,
                                       stat: str, amount: int):
