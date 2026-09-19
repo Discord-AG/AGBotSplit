@@ -1449,6 +1449,22 @@ async def slash_removeleaderboardstat(interaction: discord.Interaction, user: di
                              (amount, interaction.guild.id, user.id))
             await db.commit()
     await interaction.response.send_message(f"❌ Removed **{amount:,}** from {user.mention}'s **{stat}**.")
- 
+
+@bot.tree.command(name="rankspanel", description="Shows the ranks panel")
+async def rankspanelembed(interaction: discord.Interaction):
+    await interaction.response.send_message("ranks panel is being sent")
+
+    embed=discord.Embed(
+        title="RANKS",
+        description="Ranks are updated through your balance.",
+        color=discord.Color.black()
+    )
+    embed.add_field(name="<@&1539341777268375633> - 250M+", inline=False)
+    embed.add_field(name="<@&1539341855941206036> - 1.5B+", inline=False)
+    embed.add_field(name="<@&1539341829017702531> - 5B+", inline=False)
+    embed.add_field(name="<@&1539341884248555531> - 20B+", inline=False)
+
+    await interaction.followup.send(embed=embed)
+                  
 if __name__ == "__main__":
     bot.run(TOKEN)
