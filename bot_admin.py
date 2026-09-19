@@ -1648,7 +1648,7 @@ async def slash_resetrole(interaction: discord.Interaction,
 
 STAFF_ROLE_ID = 1541906011802050733
 EXCHANGE_PING_ROLE_ID = 1550230803810623570   # pinged on prize-claim tickets
-TRANSCRIPT_CHANNEL_ID = 1550925805389873274
+TRANSCRIPT_CHANNEL_ID = 1550926363173851156
 
 active_tickets = set()
 
