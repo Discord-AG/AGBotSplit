@@ -1457,7 +1457,7 @@ async def rankspanelembed(interaction: discord.Interaction):
     embed=discord.Embed(
         title="RANKS",
         description="Ranks are updated through your balance.",
-        color=discord.Color.black()
+        color=discord.Color.red()
     )
     embed.add_field(name="<@&1539341777268375633> - 250M+", inline=False)
     embed.add_field(name="<@&1539341855941206036> - 1.5B+", inline=False)
