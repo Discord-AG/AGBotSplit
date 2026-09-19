@@ -1245,7 +1245,6 @@ async def on_member_join(member: discord.Member):
     if member.bot: return
     gid = member.guild.id
 
-    # Work out which invite was used before anything else touches the cache
     try:
         await _record_invite_join(member)
     except Exception as e:
@@ -1335,7 +1334,6 @@ async def on_ready():
     bot.tree.clear_commands(guild=None)
     await bot.tree.sync()
 
-    # Seed the invite cache so the first join after startup resolves correctly
     for g in bot.guilds:
         await _refresh_invite_cache(g)
 
@@ -3081,7 +3079,6 @@ async def bank_interest_loop():
 # INVITE TRACKING
 # ═══════════════════════════════════════════════════════
 
-# {guild_id: {code: uses}} — snapshot used to work out which invite was used
 _invite_cache: dict[int, dict[str, int]] = {}
 
 
@@ -3147,13 +3144,11 @@ async def _record_invite_join(member: discord.Member):
 
     _pc, _pm, log_ch_id, min_age_days, _cut, _re = await get_invite_config(gid)
 
-    # Validity: account must be older than the configured minimum
     account_age_days = (datetime.now(UTC) - member.created_at).days
     valid, reason = 1, "Valid"
     if account_age_days < min_age_days:
         valid, reason = 0, f"Account only {account_age_days}d old (min {min_age_days}d)"
 
-    # Rejoin check — if they were invited before, don't double-count
     async with get_db() as db:
         async with db.execute(
             "SELECT id FROM invite_uses WHERE guild_id=? AND invited_id=?",
@@ -3204,7 +3199,7 @@ class InvitePanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Get My Invite Link", emoji="🔗",
+    @discord.ui.button(label="My link", emoji="🔗",
                        style=discord.ButtonStyle.primary, custom_id="invite_panel:code")
     async def get_code(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
@@ -3227,7 +3222,7 @@ class InvitePanelView(discord.ui.View):
 
         if existing_code:
             await interaction.response.send_message(
-                f"🔗 Your invite link:\nhttps://discord.gg/{existing_code}", ephemeral=True)
+                f"🔗 Your link:\nhttps://discord.gg/{existing_code}", ephemeral=True)
             return
 
         try:
@@ -3252,8 +3247,8 @@ class InvitePanelView(discord.ui.View):
         _invite_cache.setdefault(guild.id, {})[invite.code] = 0
 
         await interaction.response.send_message(
-            f"🔗 Your personal invite link:\n{invite.url}\n\n"
-            f"Anyone who joins with this counts toward your invite stats.", ephemeral=True)
+            f"🔗 Your link:\n{invite.url}\n\n"
+            f"Anyone who joins with this link toward your invite stats.", ephemeral=True)
 
     @discord.ui.button(label="My Stats", emoji="📊",
                        style=discord.ButtonStyle.secondary, custom_id="invite_panel:stats")
@@ -3269,13 +3264,12 @@ class InvitePanelView(discord.ui.View):
         embed.add_field(name="Rank", value=(f"#{rank}" if rank else "Unranked"), inline=True)
         embed.add_field(name="✅ Valid", value=f"{valid:,}", inline=True)
         embed.add_field(name="⚠️ Invalid", value=f"{invalid:,}", inline=True)
-        embed.add_field(name="💰 Earned from Invitees' Chests",
+        embed.add_field(name="💰 Earned from invited people opening chests",
                         value=f"{earnings:,} coins",
                         inline=False)
-        embed.set_footer(text=f"You earn {cut_percent:g}% of any coins your invitees win "
+        embed.set_footer(text=f"You earn {cut_percent:g}% of any coins people you invited win "
                               f"from chests — they still get their full amount.")
 
-        # Show what tier they're in / next tier up
         async with get_db() as db:
             async with db.execute(
                 "SELECT max_rank, reward FROM invite_reward_tiers "
@@ -3348,7 +3342,7 @@ async def setinvitepanel(interaction: discord.Interaction, channel: discord.Text
     embed = discord.Embed(
         title="🔗 Invite Rewards",
         description=("Invite people and earn daily coin rewards based on your rank.\n\n"
-                     "**🔗 Get My Invite Link** — create your personal tracked invite\n"
+                     "**🔗 Get My Link** — create your personal invite\n"
                      "**📊 My Stats** — your rank, valid/invalid invites, and chest earnings\n"
                      "**🏆 Leaderboard** — see the top inviters"),
         color=discord.Color.blurple())
@@ -3357,7 +3351,7 @@ async def setinvitepanel(interaction: discord.Interaction, channel: discord.Text
                         value="\n".join(f"Top {mr} → **{r:,}** coins/day" for mr, r in tiers),
                         inline=False)
     embed.add_field(name="💰 Chest Cut",
-                    value=f"You earn **{cut_percent:g}%** of any coins your invitees win from "
+                    value=f"You earn **{cut_percent:g}%** of any coins people you invite win from "
                           f"chests — they keep their full amount.", inline=False)
     embed.set_footer(text=f"Invites only count if the account is at least {min_age} days old.")
 
@@ -3389,8 +3383,8 @@ async def setinvitelogchannel(interaction: discord.Interaction, channel: discord
 @bot.tree.command(name="setinvitetier",
                   description="Admin: set the daily coin reward for a leaderboard rank tier")
 @app_commands.describe(
-    max_rank="Top N — e.g. 10 means ranks 1-10 get this reward",
-    reward="Daily coins — supports 1k, 1m, 1b. Use 0 to delete the tier.")
+    max_rank="Top N get this reward",
+    reward="Daily coins (use 0 to delete the tier)")
 @command_enabled()
 async def setinvitetier(interaction: discord.Interaction, max_rank: int, reward: str):
     if not await is_allowed_to_giveaway(interaction):
@@ -3425,8 +3419,7 @@ async def setinvitetier(interaction: discord.Interaction, max_rank: int, reward:
             tiers = await cur.fetchall()
     lines = "\n".join(f"• Top {mr} → **{r:,}** coins/day" for mr, r in tiers)
     await interaction.response.send_message(
-        f"✅ Top **{max_rank}** now earns **{parsed:,}** coins/day.\n\n**All tiers:**\n{lines}\n\n"
-        f"*Tiers apply smallest-first, so someone at rank 5 gets the top-10 reward, not top-25.*")
+        f"✅ Top **{max_rank}** now earns **{parsed:,}** coins/day.\n\n**All tiers:**\n{lines}\n\n")
 
 
 @bot.command(name="setinvitetier")
@@ -3436,7 +3429,7 @@ async def pfx_setinvitetier(ctx, max_rank: int, reward: str):
 
 
 @bot.tree.command(name="setinvitechestcut",
-                  description="Admin: set what % of invitees' chest coins the inviter earns")
+                  description="Admin: set what % of the invited people's chest coins the inviter earns")
 @app_commands.describe(percent="Percentage, e.g. 40 for 40%")
 @command_enabled()
 async def setinvitechestcut(interaction: discord.Interaction, percent: float):
@@ -3452,8 +3445,8 @@ async def setinvitechestcut(interaction: discord.Interaction, percent: float):
                              (percent, interaction.guild.id))
             await db.commit()
     await interaction.response.send_message(
-        f"✅ Inviters now earn **{percent:g}%** of coins their invitees win from chests.\n"
-        f"*The invitee still receives their full amount — this is additional.*")
+        f"✅ Inviters now earn **{percent:g}%** of coins their invited people win from chests.\n"
+        f"*The invited person still receives their full amount — this is additional.*")
 
 
 @bot.tree.command(name="setinviteminage",
@@ -3530,7 +3523,7 @@ async def invitestats(interaction: discord.Interaction, user: discord.Member = N
     embed.add_field(name="Rank", value=(f"#{rank}" if rank else "Unranked"), inline=True)
     embed.add_field(name="✅ Valid", value=f"{valid:,}", inline=True)
     embed.add_field(name="⚠️ Invalid", value=f"{invalid:,}", inline=True)
-    embed.add_field(name="💰 Earned from Invitees' Chests", value=f"{earnings:,} coins", inline=False)
+    embed.add_field(name="💰 Earned from invited people opening chests", value=f"{earnings:,} coins", inline=False)
     await interaction.response.send_message(embed=embed)
 
 
@@ -3937,11 +3930,11 @@ async def setadminpanel2(interaction: discord.Interaction, channel: discord.Text
         await interaction.response.send_message("❌ No permission.", ephemeral=True); return
     embed = discord.Embed(
         title="🛠 Admin Panel — Bank & Blacklist",
-        description=("**🏦 Bank Settings** — set the daily interest rate and deposit cap\n"
-                     "**🚫 Blacklist** — block a user from the economy (temporary or permanent)\n"
-                     "**✅ Unblacklist** — restore access\n"
-                     "**📋 View Blacklist** — see who's currently blocked\n"
-                     "**🏦 Bank Overview** — total banked and daily interest cost"),
+        description=("**🏦 Bank Settings** - set the daily interest rate and deposit cap\n"
+                     "**🚫 Blacklist** - ban a user from the economy (temp or perm)\n"
+                     "**✅ Unblacklist** - unban from the economy\n"
+                     "**📋 View Blacklist** - see who's currently banned from the economy\n"
+                     "**🏦 Bank Overview** - total banked and daily interest cost"),
         color=discord.Color.dark_gold())
     embed.set_footer(text="Blacklisted users earn no coins, EXP, chest rewards, "
                           "giveaway entries, or bank interest.")
