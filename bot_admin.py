@@ -9,7 +9,7 @@ import common
 from common import (
     get_db, db_lock, setup_database, log_event, _log_embed, command_enabled,
     is_allowed_to_giveaway, _is_allowed_ctx, is_system_enabled, set_system_flag,
-    get_balance, add_balance, get_exp, add_exp, get_level,
+    get_balance, add_balance, get_xp, add_xp, get_level,
     inventory_add, inventory_remove, inventory_get,
     get_tickets, add_tickets,
     add_stat, ensure_stats, _do_reset,
@@ -44,7 +44,7 @@ register_bot_instance(bot)
 # ═══════════════════════════════════════════════════════
 
 def _parse_prize_json(prize_str: str) -> dict | None:
-    """Parse prize JSON or shorthand like 'balance:1000' or 'exp:500'."""
+    """Parse prize JSON or shorthand like 'balance:1000' or 'xp:500'."""
     try:
         data = json.loads(prize_str)
         if isinstance(data, dict): return data
@@ -61,7 +61,7 @@ def _parse_prize_json(prize_str: str) -> dict | None:
 
 async def _award_code_prize(gid: int, uid: int, prize: dict, guild: discord.Guild = None):
     if "balance" in prize and prize["balance"]: await add_balance(gid, uid, int(prize["balance"]), bot=bot)
-    if "exp" in prize and prize["exp"]: await add_exp(gid, uid, int(prize["exp"]))
+    if "xp" in prize and prize["xp"]: await add_xp(gid, uid, int(prize["xp"]))
     if "tickets" in prize and prize["tickets"]: await add_tickets(gid, uid, int(prize["tickets"]))
     if "gamble_tokens" in prize and prize["gamble_tokens"]:
         await inventory_add(gid, uid, GAMBLE_TOKEN, int(prize["gamble_tokens"]))
@@ -81,7 +81,7 @@ async def _award_code_prize(gid: int, uid: int, prize: dict, guild: discord.Guil
 def _prize_summary(prize: dict, guild: discord.Guild = None) -> str:
     parts = []
     if prize.get("balance"):       parts.append(f"💰 {int(prize['balance']):,} coins")
-    if prize.get("exp"):           parts.append(f"⭐ {int(prize['exp']):,} EXP")
+    if prize.get("xp"):           parts.append(f"⭐ {int(prize['xp']):,} xp")
     if prize.get("tickets"):       parts.append(f"🎟 {prize['tickets']} ticket(s)")
     if prize.get("gamble_tokens"): parts.append(f"🎲 {prize['gamble_tokens']} gamble token(s)")
     if prize.get("vip_keys"):      parts.append(f"🔑 {prize['vip_keys']} VIP key(s)")
@@ -96,7 +96,7 @@ def _prize_summary(prize: dict, guild: discord.Guild = None) -> str:
 @bot.tree.command(name="createcode", description="Create a redeem code")
 @app_commands.describe(
     code="The code users type to redeem",
-    prize_json='Prize as JSON {"balance":1000,"exp":500} or shorthand "balance:1000"',
+    prize_json='Prize as JSON {"balance":1000,"xp":500} or shorthand "balance:1000"',
     uses="Max uses (-1 = unlimited, default 1)",
     min_level="Minimum Activity Rank required (default 0 = any)",
     min_balance="Minimum balance required (default 0 = any)",
@@ -313,16 +313,16 @@ class _APModal(discord.ui.Modal):
             if amount <= 0: await interaction.response.send_message("❌ Amount must be > 0.", ephemeral=True); return
             await add_balance(gid, uid, -amount, bot=bot)
             msg = f"❌ Removed {amount:,} coins from {member.mention}."
-        elif action == "add_exp":
+        elif action == "add_xp":
             if amount <= 0: await interaction.response.send_message("❌ Amount must be > 0.", ephemeral=True); return
-            await add_exp(gid, uid, amount, is_bonus=True)
-            msg = f"⭐ Added {amount:,} EXP to {member.mention}."
+            await add_xp(gid, uid, amount, is_bonus=True)
+            msg = f"⭐ Added {amount:,} xp to {member.mention}."
         elif action == "reset_balance":
             await _do_reset(gid, uid, "balance")
             msg = f"🔄 Reset balance for {member.mention}."
-        elif action == "reset_exp":
-            await _do_reset(gid, uid, "exp")
-            msg = f"🔄 Reset EXP for {member.mention}."
+        elif action == "reset_xp":
+            await _do_reset(gid, uid, "xp")
+            msg = f"🔄 Reset xp for {member.mention}."
         elif action == "reset_inventory":
             await _do_reset(gid, uid, "inventory")
             msg = f"🔄 Reset inventory for {member.mention}."
@@ -359,17 +359,17 @@ class AdminPanelView(discord.ui.View):
     async def rem_bal(self, i, b):
         if await self._check(i): await i.response.send_modal(_APModal("remove_balance"))
 
-    @discord.ui.button(label="⭐ Add EXP", style=discord.ButtonStyle.success, custom_id="ap:add_exp", row=0)
-    async def add_exp_btn(self, i, b):
-        if await self._check(i): await i.response.send_modal(_APModal("add_exp"))
+    @discord.ui.button(label="⭐ Add xp", style=discord.ButtonStyle.success, custom_id="ap:add_xp", row=0)
+    async def add_xp_btn(self, i, b):
+        if await self._check(i): await i.response.send_modal(_APModal("add_xp"))
 
     @discord.ui.button(label="🔄 Reset Balance", style=discord.ButtonStyle.secondary, custom_id="ap:reset_balance", row=1)
     async def rst_bal(self, i, b):
         if await self._check(i): await i.response.send_modal(_APModal("reset_balance"))
 
-    @discord.ui.button(label="🔄 Reset EXP", style=discord.ButtonStyle.secondary, custom_id="ap:reset_exp", row=1)
-    async def rst_exp(self, i, b):
-        if await self._check(i): await i.response.send_modal(_APModal("reset_exp"))
+    @discord.ui.button(label="🔄 Reset xp", style=discord.ButtonStyle.secondary, custom_id="ap:reset_xp", row=1)
+    async def rst_xp(self, i, b):
+        if await self._check(i): await i.response.send_modal(_APModal("reset_xp"))
 
     @discord.ui.button(label="🔄 Reset Inventory", style=discord.ButtonStyle.secondary, custom_id="ap:reset_inventory", row=1)
     async def rst_inv(self, i, b):
@@ -401,7 +401,7 @@ async def setadminpanel(interaction: discord.Interaction, channel: discord.TextC
             try: await (await old_ch.fetch_message(old[1])).delete()
             except Exception: pass
     embed = discord.Embed(title="⚙️ Admin Panel",
-        description="Use the buttons below to manage player balances, EXP, and data.",
+        description="Use the buttons below to manage player balances, xp, and data.",
         color=discord.Color.blurple())
     embed.set_footer(text="All actions are logged. Only authorised roles can use these buttons.")
     msg = await channel.send(embed=embed, view=AdminPanelView())
@@ -540,7 +540,7 @@ async def cmd_systemstatus(ctx):
 # LOG CHANNELS
 # ═══════════════════════════════════════════════════════
 
-_LOG_TYPES = ["balance","exp","giveaway","mega","chest","box","item","trade","admin","command","error"]
+_LOG_TYPES = ["balance","xp","giveaway","mega","chest","box","item","trade","admin","command","error"]
 _LOG_CHOICES = [app_commands.Choice(name=t.title(), value=t) for t in _LOG_TYPES]
 
 @bot.tree.command(name="setlogchannel", description="Set a log channel for a specific event type")
@@ -679,8 +679,8 @@ async def cmd_disableautoreset(ctx):
 @bot.command(name="setautoresetrule")
 async def cmd_setautoresetrule(ctx, reset_type: str, delay_seconds: int = 0):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    if reset_type not in ("balance","exp","inventory","tickets","stats","all"):
-        await ctx.send("❌ Valid types: balance, exp, inventory, tickets, stats, all"); return
+    if reset_type not in ("balance","xp","inventory","tickets","stats","all"):
+        await ctx.send("❌ Valid types: balance, xp, inventory, tickets, stats, all"); return
     if delay_seconds < 0: await ctx.send("❌ Delay must be ≥ 0."); return
     async with db_lock:
         async with get_db() as db:
@@ -746,15 +746,15 @@ async def auto_reset_loop():
         await asyncio.sleep(30)
 
 # ═══════════════════════════════════════════════════════
-# EXP FROM CHAT
+# xp FROM CHAT
 # ═══════════════════════════════════════════════════════
 
-async def _calc_exp_gain(member: discord.Member, channel: discord.TextChannel) -> int:
+async def _calc_xp_gain(member: discord.Member, channel: discord.TextChannel) -> int:
     base = random.randint(30, 50)
     gid = member.guild.id
     async with get_db() as db:
         async with db.execute(
-            "SELECT role_id,boost_percent,channel_id,category_id FROM exp_boosts WHERE guild_id=?",
+            "SELECT role_id,boost_percent,channel_id,category_id FROM xp_boosts WHERE guild_id=?",
             (gid,)) as cur:
             boosts = await cur.fetchall()
     role_ids    = {r.id for r in member.roles}
@@ -773,7 +773,7 @@ async def _calc_exp_gain(member: discord.Member, channel: discord.TextChannel) -
 # RESET COMMANDS
 # ═══════════════════════════════════════════════════════
 
-_RESET_TYPES = ("balance","exp","inventory","tickets","stats","all")
+_RESET_TYPES = ("balance","xp","inventory","tickets","stats","all")
 
 @bot.command(name="resetuser")
 async def cmd_resetuser(ctx, user: discord.Member, reset_type: str = "all"):
@@ -808,7 +808,7 @@ async def cmd_cleanuptransfer(ctx):
     if ctx.author.id != BOT_OWNER_ID: await ctx.send("❌ Owner only."); return
     gid = ctx.guild.id
     _CLEANUP_TABLES = [
-        "balances","exp_history","user_stats","inventory",
+        "balances","xp_history","user_stats","inventory",
         "mega_tickets","mega_bought","giveaway_roles","log_channels",
         "disabled_commands_persist","system_flags","prefix_restrictions",
         "auto_reset_config","auto_reset_rules","auto_reset_pending",
@@ -855,7 +855,7 @@ async def cmd_transfer(ctx, guild_id_from: int, guild_id_to: int):
 
     async with ctx.typing():
         _SIMPLE = [
-            "balances","exp_history","user_stats","inventory",
+            "balances","xp_history","user_stats","inventory",
             "mega_tickets","mega_bought","giveaway_roles","log_channels",
             "disabled_commands_persist","system_flags","prefix_restrictions",
             "auto_reset_config","auto_reset_rules","auto_reset_pending",
@@ -908,14 +908,14 @@ async def cmd_transfer(ctx, guild_id_from: int, guild_id_to: int):
                 await db.execute("DELETE FROM games WHERE guild_id=?", (guild_id_to,))
                 await db.execute("DELETE FROM game_answers WHERE guild_id=?", (guild_id_to,))
                 await db.execute("DELETE FROM game_hints WHERE guild_id=?", (guild_id_to,))
-                async with db.execute("SELECT game_name,enabled,reward_balance,reward_exp,reward_tickets,"
+                async with db.execute("SELECT game_name,enabled,reward_balance,reward_xp,reward_tickets,"
                                        "reward_gamble_tokens,reward_vip_keys,reward_item,reward_item_qty,"
                                        "reward_role_id,chance,answer_time FROM games WHERE guild_id=?",
                                        (guild_id_from,)) as cur:
                     games_rows = await cur.fetchall()
                 for row in games_rows:
                     await db.execute("INSERT OR IGNORE INTO games(guild_id,game_name,enabled,reward_balance,"
-                                     "reward_exp,reward_tickets,reward_gamble_tokens,reward_vip_keys,"
+                                     "reward_xp,reward_tickets,reward_gamble_tokens,reward_vip_keys,"
                                      "reward_item,reward_item_qty,reward_role_id,chance,answer_time) "
                                      "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (guild_id_to, *row))
                     gname = row[0]
@@ -967,13 +967,13 @@ _HELP_CATS = {
         ("balance","Check your or another user's balance","/balance [@user]"),
         ("gift","Give your own coins to another user","!gift @user <amount>"),
         ("addbalance / removebalance","Admin: add/remove coins","!addbalance @user <amount>"),
-        ("activityrank","Check Activity Rank and EXP","/activityrank [@user]"),
-        ("addexp / removeexp","Admin: add/remove usable EXP","!addexp @user <amount>"),
-        ("addtotalexp / removetotalexp","Admin: add/remove Total EXP (affects leaderboard rank)","!addtotalexp @user <amount>"),
-        ("expboost","Admin: set EXP boost for a role","/expboost <role> <boost%> [channel]"),
-        ("removeexpboost","Admin: remove an EXP boost","/removeexpboost <role> [channel]"),
-        ("listexpboosts","List all active EXP boosts","/listexpboosts"),
-        ("leaderboard","View leaderboards (balance, EXP, tickets, hosted balance…)","/leaderboard <category>"),
+        ("activityrank","Check Activity Rank and xp","/activityrank [@user]"),
+        ("addxp / removexp","Admin: add/remove usable xp","!addxp @user <amount>"),
+        ("addtotalxp / removetotalxp","Admin: add/remove Total xp (affects leaderboard rank)","!addtotalxp @user <amount>"),
+        ("xpboost","Admin: set xp boost for a role","/xpboost <role> <boost%> [channel]"),
+        ("removexpboost","Admin: remove an xp boost","/removexpboost <role> [channel]"),
+        ("listxpboosts","List all active xp boosts","/listxpboosts"),
+        ("leaderboard","View leaderboards (balance, xp, tickets, hosted balance…)","/leaderboard <category>"),
         ("addbalancerank","Admin: add a role granted at a balance threshold","/addbalancerank <threshold> @role"),
         ("removebalancerank / listbalanceranks / refreshbalanceranks / checkbalancerank","Manage balance ranks","!listbalanceranks"),
         ("setstatchannel","Admin: post the stats panel","/setstatchannel #channel"),
@@ -996,7 +996,7 @@ _HELP_CATS = {
         ("setnotifychannel","Admin: set notification channel for giveaway/game starts","/setnotifychannel #channel"),
     ]),
     "drops": ("📦","Drops & Raffle",[
-        ("chest","Open EXP chest(s)","/chest [amount]  or  !chest [amount]"),
+        ("chest","Open xp chest(s)","/chest [amount]  or  !chest [amount]"),
         ("vipchest","Open VIP Chest(s) — needs VIP Key","/vipchest [amount]"),
         ("setchestchannel","Admin: post the chest panel","/setchestchannel #channel"),
         ("addchestprize / removechestprize / listchestprizes","Admin: configure chest prizes","!listchestprizes [chest|vipchest]"),
@@ -1034,7 +1034,7 @@ _HELP_CATS = {
         ("redeem","Redeem a code for a reward","/redeem <code>"),
     ]),
     "admin": ("⚙️","Admin & Systems",[
-        ("setadminpanel","Post the admin panel (balance/EXP/reset buttons)","/setadminpanel #channel"),
+        ("setadminpanel","Post the admin panel (balance/xp/reset buttons)","/setadminpanel #channel"),
         ("disablecmd / enablecmd / listcmds","Disable or re-enable commands in this server","!disablecmd <name>"),
         ("enablesystem / disablesystem / systemstatus","Toggle systems (mega, vipkey, gamble)","/enablesystem <system>"),
         ("setlogchannel / removelogchannel / listlogchannels","Configure log channels","/setlogchannel <type> #channel"),
@@ -1206,10 +1206,10 @@ async def on_message(message: discord.Message):
     if isinstance(message.author, discord.Member) and not message.author.bot:
         gid, uid = message.guild.id, message.author.id
         try:
-            exp_gain = await _calc_exp_gain(message.author, message.channel)
-            await add_exp(gid, uid, exp_gain)
+            xp_gain = await _calc_xp_gain(message.author, message.channel)
+            await add_xp(gid, uid, xp_gain)
         except Exception as e:
-            print(f"[EXP] {e}")
+            print(f"[xp] {e}")
         bump_msg_count(gid, uid)
 
     if message.content.startswith(common._BOT_PREFIX) and not _prefix_channel_allowed(message):
@@ -1534,7 +1534,7 @@ async def slash_disableautoreset(interaction: discord.Interaction):
 
 _RESET_TYPE_CHOICES = [
     app_commands.Choice(name=t.title(), value=t)
-    for t in ("balance","exp","inventory","tickets","stats","all")
+    for t in ("balance","xp","inventory","tickets","stats","all")
 ]
 
 @bot.tree.command(name="setautoresetrule",
@@ -2318,7 +2318,7 @@ async def _create_exchange_ticket(guild: discord.Guild, user: discord.Member,
 
 
 exchange_group = app_commands.Group(name="exchange",
-                                    description="Exchange coins, EXP, and special prizes")
+                                    description="Exchange coins, xp, and special prizes")
 bot.tree.add_command(exchange_group)
 
 
@@ -2336,10 +2336,10 @@ async def exchange_rates(interaction: discord.Interaction):
             prizes = await cur.fetchall()
 
     embed = discord.Embed(title="💱 Exchange Rates", color=discord.Color.teal())
-    embed.add_field(name="💰 → ⭐ Coins to EXP",
-                    value=f"1 coin = **{c2e:g}** EXP", inline=True)
-    embed.add_field(name="⭐ → 💰 EXP to Coins",
-                    value=f"1 EXP = **{e2c:g}** coins", inline=True)
+    embed.add_field(name="💰 → ⭐ Coins to xp",
+                    value=f"1 coin = **{c2e:g}** xp", inline=True)
+    embed.add_field(name="⭐ → 💰 xp to Coins",
+                    value=f"1 xp = **{e2c:g}** coins", inline=True)
     if prizes:
         lines = []
         for pid, name, cost, desc, stock in prizes:
@@ -2349,13 +2349,13 @@ async def exchange_rates(interaction: discord.Interaction):
         embed.add_field(name="🎁 Special Prizes", value="\n".join(lines)[:1024], inline=False)
     else:
         embed.add_field(name="🎁 Special Prizes", value="*None configured yet*", inline=False)
-    embed.set_footer(text="/exchange coins-to-exp · /exchange exp-to-coins · /exchange prize")
+    embed.set_footer(text="/exchange coins-to-xp · /exchange xp-to-coins · /exchange prize")
     await interaction.response.send_message(embed=embed)
 
 
-@exchange_group.command(name="coins-to-exp", description="Exchange your coins for EXP")
+@exchange_group.command(name="coins-to-xp", description="Exchange your coins for xp")
 @app_commands.describe(amount="Coins to spend — supports 1k, 1m, 1b, etc.")
-async def exchange_coins_to_exp(interaction: discord.Interaction, amount: str):
+async def exchange_coins_to_xp(interaction: discord.Interaction, amount: str):
     gid, uid = interaction.guild.id, interaction.user.id
     c2e, _e2c, _cat, enabled = await get_exchange_config(gid)
     if not enabled:
@@ -2370,27 +2370,27 @@ async def exchange_coins_to_exp(interaction: discord.Interaction, amount: str):
         await interaction.response.send_message(
             f"❌ You need **{parsed:,}** coins but only have **{bal:,}**.", ephemeral=True); return
 
-    exp_gained = int(parsed * c2e)
-    if exp_gained < 1:
+    xp_gained = int(parsed * c2e)
+    if xp_gained < 1:
         await interaction.response.send_message(
-            f"❌ That would give **0** EXP at the current rate (1 coin = {c2e:g} EXP). "
+            f"❌ That would give **0** xp at the current rate (1 coin = {c2e:g} xp). "
             f"Try a larger amount.", ephemeral=True); return
 
     await add_balance(gid, uid, -parsed, bot=bot)
-    await add_exp(gid, uid, exp_gained, is_bonus=True)
+    await add_xp(gid, uid, xp_gained, is_bonus=True)
 
     embed = discord.Embed(title="💱 Exchange Complete", color=discord.Color.green(),
-        description=f"💰 **-{parsed:,}** coins\n⭐ **+{exp_gained:,}** EXP")
-    embed.set_footer(text=f"Rate: 1 coin = {c2e:g} EXP")
+        description=f"💰 **-{parsed:,}** coins\n⭐ **+{xp_gained:,}** xp")
+    embed.set_footer(text=f"Rate: 1 coin = {c2e:g} xp")
     await interaction.response.send_message(embed=embed)
     await log_event(gid, "balance", _log_embed(
-        "💱 Coins → EXP", discord.Color.teal(),
-        User=interaction.user.mention, Spent=f"{parsed:,} coins", Received=f"{exp_gained:,} EXP"))
+        "💱 Coins → xp", discord.Color.teal(),
+        User=interaction.user.mention, Spent=f"{parsed:,} coins", Received=f"{xp_gained:,} xp"))
 
 
-@exchange_group.command(name="exp-to-coins", description="Exchange your EXP for coins")
-@app_commands.describe(amount="EXP to spend — supports 1k, 1m, 1b, etc.")
-async def exchange_exp_to_coins(interaction: discord.Interaction, amount: str):
+@exchange_group.command(name="xp-to-coins", description="Exchange your xp for coins")
+@app_commands.describe(amount="xp to spend — supports 1k, 1m, 1b, etc.")
+async def exchange_xp_to_coins(interaction: discord.Interaction, amount: str):
     gid, uid = interaction.guild.id, interaction.user.id
     _c2e, e2c, _cat, enabled = await get_exchange_config(gid)
     if not enabled:
@@ -2400,28 +2400,28 @@ async def exchange_exp_to_coins(interaction: discord.Interaction, amount: str):
     if parsed is None or parsed <= 0:
         await interaction.response.send_message("❌ Invalid amount.", ephemeral=True); return
 
-    exp = await get_exp(gid, uid)
-    if exp < parsed:
+    xp = await get_xp(gid, uid)
+    if xp < parsed:
         await interaction.response.send_message(
-            f"❌ You need **{parsed:,}** usable EXP but only have **{exp:,}**.",
+            f"❌ You need **{parsed:,}** usable xp but only have **{xp:,}**.",
             ephemeral=True); return
 
     coins_gained = int(parsed * e2c)
     if coins_gained < 1:
         await interaction.response.send_message(
-            f"❌ That would give **0** coins at the current rate (1 EXP = {e2c:g} coins). "
+            f"❌ That would give **0** coins at the current rate (1 xp = {e2c:g} coins). "
             f"Try a larger amount.", ephemeral=True); return
 
-    await add_exp(gid, uid, -parsed)
+    await add_xp(gid, uid, -parsed)
     await add_balance(gid, uid, coins_gained, bot=bot)
 
     embed = discord.Embed(title="💱 Exchange Complete", color=discord.Color.green(),
-        description=f"⭐ **-{parsed:,}** EXP\n💰 **+{coins_gained:,}** coins")
-    embed.set_footer(text=f"Rate: 1 EXP = {e2c:g} coins")
+        description=f"⭐ **-{parsed:,}** xp\n💰 **+{coins_gained:,}** coins")
+    embed.set_footer(text=f"Rate: 1 xp = {e2c:g} coins")
     await interaction.response.send_message(embed=embed)
     await log_event(gid, "balance", _log_embed(
-        "💱 EXP → Coins", discord.Color.teal(),
-        User=interaction.user.mention, Spent=f"{parsed:,} EXP", Received=f"{coins_gained:,} coins"))
+        "💱 xp → Coins", discord.Color.teal(),
+        User=interaction.user.mention, Spent=f"{parsed:,} xp", Received=f"{coins_gained:,} coins"))
 
 
 @exchange_group.command(name="prize", description="Exchange coins for a special prize (opens a claim ticket)")
@@ -2512,8 +2512,8 @@ async def exchange_prize(interaction: discord.Interaction, prize: str):
     direction="Which rate to change",
     rate="The multiplier. e.g. 0.5 means 1 unit in = 0.5 units out")
 @app_commands.choices(direction=[
-    app_commands.Choice(name="Coins → EXP (1 coin = N EXP)",   value="coins_to_exp"),
-    app_commands.Choice(name="EXP → Coins (1 EXP = N coins)",  value="exp_to_coins"),
+    app_commands.Choice(name="Coins → xp (1 coin = N xp)",   value="coins_to_xp"),
+    app_commands.Choice(name="xp → Coins (1 xp = N coins)",  value="xp_to_coins"),
 ])
 @command_enabled()
 async def setexchangerate(interaction: discord.Interaction, direction: str, rate: float):
@@ -2522,7 +2522,7 @@ async def setexchangerate(interaction: discord.Interaction, direction: str, rate
     if rate <= 0:
         await interaction.response.send_message("❌ Rate must be greater than 0.", ephemeral=True); return
 
-    column = "coins_to_exp_rate" if direction == "coins_to_exp" else "exp_to_coins_rate"
+    column = "coins_to_xp_rate" if direction == "coins_to_xp" else "xp_to_coins_rate"
     await get_exchange_config(interaction.guild.id)   # ensure row exists
     async with db_lock:
         async with get_db() as db:
@@ -2530,16 +2530,16 @@ async def setexchangerate(interaction: discord.Interaction, direction: str, rate
                              (rate, interaction.guild.id))
             await db.commit()
 
-    label = ("1 coin = **{:g}** EXP" if direction == "coins_to_exp"
-             else "1 EXP = **{:g}** coins").format(rate)
+    label = ("1 coin = **{:g}** xp" if direction == "coins_to_xp"
+             else "1 xp = **{:g}** coins").format(rate)
     await interaction.response.send_message(f"✅ Exchange rate updated: {label}")
 
 
 @bot.command(name="setexchangerate")
 async def pfx_setexchangerate(ctx, direction: str, rate: float):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    if direction not in ("coins_to_exp", "exp_to_coins"):
-        await ctx.send("❌ Direction must be `coins_to_exp` or `exp_to_coins`."); return
+    if direction not in ("coins_to_xp", "xp_to_coins"):
+        await ctx.send("❌ Direction must be `coins_to_xp` or `xp_to_coins`."); return
     await setexchangerate._callback(FakeInteraction(ctx), direction, rate)
 
 
@@ -2706,26 +2706,26 @@ async def pfx_toggleexchange(ctx, enabled: str):
 
 @bot.command(name="exchange")
 async def pfx_exchange(ctx, action: str = None, *, arg: str = None):
-    """!exchange rates | !exchange coinstoexp <amt> | !exchange exptocoins <amt> | !exchange prize <name>"""
+    """!exchange rates | !exchange coinstoxp <amt> | !exchange xptocoins <amt> | !exchange prize <name>"""
     p = common._BOT_PREFIX
     if action is None:
-        await ctx.send(f"Use `{p}exchange rates`, `{p}exchange coinstoexp <amount>`, "
-                       f"`{p}exchange exptocoins <amount>`, or `{p}exchange prize <name>`."); return
+        await ctx.send(f"Use `{p}exchange rates`, `{p}exchange coinstoxp <amount>`, "
+                       f"`{p}exchange xptocoins <amount>`, or `{p}exchange prize <name>`."); return
     action = action.strip().lower().replace("-", "").replace("_", "")
     fake = FakeInteraction(ctx)
     if action == "rates":
         await exchange_rates._callback(fake)
-    elif action in ("coinstoexp", "ctoe"):
+    elif action in ("coinstoxp", "ctoe"):
         if not arg: await ctx.send("❌ Specify an amount."); return
-        await exchange_coins_to_exp._callback(fake, arg)
-    elif action in ("exptocoins", "etoc"):
+        await exchange_coins_to_xp._callback(fake, arg)
+    elif action in ("xptocoins", "etoc"):
         if not arg: await ctx.send("❌ Specify an amount."); return
-        await exchange_exp_to_coins._callback(fake, arg)
+        await exchange_xp_to_coins._callback(fake, arg)
     elif action == "prize":
         if not arg: await ctx.send("❌ Specify a prize name or ID."); return
         await exchange_prize._callback(fake, arg)
     else:
-        await ctx.send(f"❌ Unknown action. Use `rates`, `coinstoexp`, `exptocoins`, or `prize`.")
+        await ctx.send(f"❌ Unknown action. Use `rates`, `coinstoxp`, `xptocoins`, or `prize`.")
 
 
 # ═══════════════════════════════════════════════════════
@@ -2757,7 +2757,7 @@ async def blacklist_cmd(interaction: discord.Interaction, user: discord.Member,
     embed.add_field(name="User", value=user.mention, inline=True)
     embed.add_field(name="Duration", value=dur_str, inline=True)
     embed.add_field(name="Reason", value=reason, inline=False)
-    embed.set_footer(text="They can't earn coins or EXP, open chests, enter giveaways, "
+    embed.set_footer(text="They can't earn coins or xp, open chests, enter giveaways, "
                           "use the exchange, or earn bank interest.")
     await interaction.response.send_message(embed=embed)
     await log_event(interaction.guild.id, "admin", _log_embed(
@@ -2804,12 +2804,12 @@ async def checkblacklist(interaction: discord.Interaction, user: discord.Member 
     if not entry or not active:
         await interaction.response.send_message(
             f"✅ {user.mention} is **not** blacklisted.", ephemeral=True); return
-    reason, expires_at, by_id, created_at = entry
+    reason, xpires_at, by_id, created_at = entry
     by = interaction.guild.get_member(by_id)
     embed = discord.Embed(title="🚫 Blacklisted", color=discord.Color.red())
     embed.add_field(name="User", value=user.mention, inline=True)
-    embed.add_field(name="Expires",
-                    value=("Never (permanent)" if expires_at == 0 else f"<t:{expires_at}:R>"),
+    embed.add_field(name="xpires",
+                    value=("Never (permanent)" if xpires_at == 0 else f"<t:{xpires_at}:R>"),
                     inline=True)
     embed.add_field(name="Reason", value=reason or "No reason given", inline=False)
     embed.add_field(name="By", value=by.mention if by else f"<@{by_id}>", inline=True)
@@ -2829,18 +2829,18 @@ async def listblacklist(interaction: discord.Interaction):
     now = int(datetime.now(UTC).timestamp())
     async with get_db() as db:
         async with db.execute(
-            "SELECT user_id, reason, expires_at FROM economy_blacklist "
-            "WHERE guild_id=? AND (expires_at=0 OR expires_at>?) ORDER BY created_at DESC",
+            "SELECT user_id, reason, xpires_at FROM economy_blacklist "
+            "WHERE guild_id=? AND (xpires_at=0 OR xpires_at>?) ORDER BY created_at DESC",
             (interaction.guild.id, now)) as cur:
             rows = await cur.fetchall()
     if not rows:
         await interaction.followup.send("✅ Nobody is currently blacklisted."); return
     lines = []
-    for uid, reason, expires_at in rows:
+    for uid, reason, xpires_at in rows:
         m = interaction.guild.get_member(uid)
         name = m.mention if m else f"<@{uid}>"
-        exp_str = "**permanent**" if expires_at == 0 else f"until <t:{expires_at}:R>"
-        lines.append(f"• {name} — {exp_str}\n  *{reason or 'No reason given'}*")
+        xp_str = "**permanent**" if xpires_at == 0 else f"until <t:{xpires_at}:R>"
+        lines.append(f"• {name} — {xp_str}\n  *{reason or 'No reason given'}*")
     pages = paginate_lines(lines, "🚫 Economy Blacklist", discord.Color.red(), per_page=10)
     view = EmbedPaginator(pages, interaction.user.id) if len(pages) > 1 else None
     await interaction.followup.send(embed=pages[0], view=view)
@@ -3883,16 +3883,16 @@ class AdminPanelExtrasView(discord.ui.View):
         now = int(datetime.now(UTC).timestamp())
         async with get_db() as db:
             async with db.execute(
-                "SELECT user_id, reason, expires_at FROM economy_blacklist "
-                "WHERE guild_id=? AND (expires_at=0 OR expires_at>?) ORDER BY created_at DESC LIMIT 25",
+                "SELECT user_id, reason, xpires_at FROM economy_blacklist "
+                "WHERE guild_id=? AND (xpires_at=0 OR xpires_at>?) ORDER BY created_at DESC LIMIT 25",
                 (i.guild.id, now)) as cur:
                 rows = await cur.fetchall()
         if not rows:
             await i.response.send_message("✅ Nobody is currently blacklisted.", ephemeral=True); return
         lines = []
-        for uid, reason, exp in rows:
-            exp_s = "**permanent**" if exp == 0 else f"until <t:{exp}:R>"
-            lines.append(f"• <@{uid}> — {exp_s}\n  *{reason or 'No reason'}*")
+        for uid, reason, xp in rows:
+            xp_s = "**permanent**" if xp == 0 else f"until <t:{xp}:R>"
+            lines.append(f"• <@{uid}> — {xp_s}\n  *{reason or 'No reason'}*")
         await i.response.send_message(
             embed=discord.Embed(title="🚫 Economy Blacklist",
                                 description="\n".join(lines), color=discord.Color.red()),
@@ -3935,7 +3935,7 @@ async def setadminpanel2(interaction: discord.Interaction, channel: discord.Text
                      "**📋 View Blacklist** - see who's currently banned from the economy\n"
                      "**🏦 Bank Overview** - total banked and daily interest cost"),
         color=discord.Color.dark_gold())
-    embed.set_footer(text="Blacklisted users earn no coins, EXP, chest rewards, "
+    embed.set_footer(text="Blacklisted users earn no coins, xp, chest rewards, "
                           "giveaway entries, or bank interest.")
     await channel.send(embed=embed, view=AdminPanelExtrasView())
     await interaction.response.send_message(f"✅ Second admin panel posted in {channel.mention}.")
