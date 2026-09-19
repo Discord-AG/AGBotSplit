@@ -8,7 +8,7 @@ import common
 from common import (
     get_db, db_lock, setup_database, log_event, _log_embed, command_enabled,
     is_allowed_to_giveaway, _is_allowed_ctx, is_system_enabled,
-    get_balance, add_balance, get_exp, add_exp, get_level, _add_chest_spending,
+    get_balance, add_balance, get_xp, add_xp, get_level, _add_chest_spending,
     inventory_add, inventory_remove, inventory_get, get_item,
     get_tickets, add_tickets, _weighted_sample_without_replacement,
     distribute_prizes, build_reward_summary,
@@ -37,11 +37,11 @@ register_bot_instance(bot)
 async def get_chest_prizes(guild_id: int, chest_type: str) -> list[dict]:
     async with get_db() as db:
         async with db.execute(
-            "SELECT id,name,exp,balance,chance FROM chest_prizes WHERE guild_id=? AND chest_type=?",
+            "SELECT id,name,xp,balance,chance FROM chest_prizes WHERE guild_id=? AND chest_type=?",
             (guild_id, chest_type)) as cur:
             rows = await cur.fetchall()
     if rows:
-        return [{"id": r[0], "name": r[1], "exp": r[2], "balance": r[3], "chance": r[4]} for r in rows]
+        return [{"id": r[0], "name": r[1], "xp": r[2], "balance": r[3], "chance": r[4]} for r in rows]
     return DEFAULT_CHEST_PRIZES if chest_type == "chest" else DEFAULT_VIP_PRIZES
 
 async def get_rare_drop_channel(guild_id: int):
@@ -71,17 +71,17 @@ async def get_rare_box_ids(guild_id: int, box_name: str) -> set[int]:
 # ═══════════════════════════════════════════════════════
 
 _CHEST_CHOICES = [
-    app_commands.Choice(name="EXP Chest", value="chest"),
+    app_commands.Choice(name="xp Chest", value="chest"),
     app_commands.Choice(name="VIP Chest", value="vipchest"),
 ]
 
 @bot.tree.command(name="addchestprize", description="Add a custom prize to the chest or VIP chest loot table")
 @app_commands.describe(chest_type="chest or vipchest", name="Prize name",
-                       exp="EXP (0 for none)", balance="Balance (0 for none)", chance="Weight")
+                       xp="xp (0 for none)", balance="Balance (0 for none)", chance="Weight")
 @app_commands.choices(chest_type=_CHEST_CHOICES)
 @command_enabled()
 async def addchestprize(interaction: discord.Interaction, chest_type: str, name: str,
-                        exp: int = 0, balance: int = 0, chance: float = 10.0):
+                        xp: int = 0, balance: int = 0, chance: float = 10.0):
     if not await is_allowed_to_giveaway(interaction):
         await interaction.response.send_message("❌ No permission.", ephemeral=True); return
     if chance <= 0:
@@ -89,18 +89,18 @@ async def addchestprize(interaction: discord.Interaction, chest_type: str, name:
     async with db_lock:
         async with get_db() as db:
             await db.execute(
-                "INSERT INTO chest_prizes(guild_id,chest_type,name,exp,balance,chance) VALUES(?,?,?,?,?,?)",
-                (interaction.guild.id, chest_type, name, exp, balance, chance))
+                "INSERT INTO chest_prizes(guild_id,chest_type,name,xp,balance,chance) VALUES(?,?,?,?,?,?)",
+                (interaction.guild.id, chest_type, name, xp, balance, chance))
             await db.commit()
     await interaction.response.send_message(
         f"✅ Added **{name}** to **{chest_type}** (weight: {chance})\n"
         f"ℹ️ Custom prizes are now active — defaults are replaced for this server.")
 
 @bot.command(name="addchestprize")
-async def pfx_addchestprize(ctx, chest_type: str, name: str, exp: int = 0, balance: int = 0, chance: float = 10.0):
+async def pfx_addchestprize(ctx, chest_type: str, name: str, xp: int = 0, balance: int = 0, chance: float = 10.0):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
     if chest_type not in ("chest","vipchest"): await ctx.send("❌ Use `chest` or `vipchest`."); return
-    await addchestprize._callback(FakeInteraction(ctx), chest_type, name, exp, balance, chance)
+    await addchestprize._callback(FakeInteraction(ctx), chest_type, name, xp, balance, chance)
 
 
 @bot.tree.command(name="removechestprize", description="Remove a prize from the chest loot table by ID")
@@ -156,7 +156,7 @@ async def addrarechestdrop(interaction: discord.Interaction, chest_type: str, pr
                 await db.commit()
             except aiosqlite.IntegrityError:
                 await interaction.response.send_message(f"❌ **{prize}** is already a rare drop for **{chest_type}**.", ephemeral=True); return
-    label = "EXP Chest" if chest_type == "chest" else "VIP Chest"
+    label = "xp Chest" if chest_type == "chest" else "VIP Chest"
     await interaction.response.send_message(f"✅ **{prize}** is now a rare drop for the **{label}**.")
 
 @bot.command(name="addrarechestdrop")
@@ -188,7 +188,7 @@ async def removerarechestdrop(interaction: discord.Interaction, chest_type: str,
             await db.execute("DELETE FROM rare_chest_config WHERE guild_id=? AND chest_type=? AND prize_name=?",
                              (interaction.guild.id, chest_type, prize))
             await db.commit()
-    label = "EXP Chest" if chest_type == "chest" else "VIP Chest"
+    label = "xp Chest" if chest_type == "chest" else "VIP Chest"
     await interaction.response.send_message(f"🗑 **{prize}** removed from rare drops for **{label}**.")
 
 @bot.command(name="removerarechestdrop")
@@ -234,7 +234,7 @@ async def _announce_rare(interaction, results, chest_type_label, rare_names):
     await rc.send(embed=re)
 
 
-@bot.tree.command(name="chest", description="Open EXP chest(s)")
+@bot.tree.command(name="chest", description="Open xp chest(s)")
 @command_enabled()
 async def chest(interaction: discord.Interaction, amount: int = 1):
     await interaction.response.defer()
@@ -243,20 +243,20 @@ async def chest(interaction: discord.Interaction, amount: int = 1):
             "🚫 You're blacklisted from the economy and can't open chests.", ephemeral=True)
         return
     if amount <= 0: await interaction.followup.send("❌ Amount must be > 0."); return
-    exp = await get_exp(interaction.guild.id, interaction.user.id)
-    if exp >= 1400: amount = min(amount, exp // CHEST_COST)
+    xp = await get_xp(interaction.guild.id, interaction.user.id)
+    if xp >= 1400: amount = min(amount, xp // CHEST_COST)
     else: amount = 1
     total_cost = CHEST_COST * amount
-    if exp < total_cost:
-        await interaction.followup.send(f"❌ You need {total_cost:,} EXP (you have {exp:,})."); return
+    if xp < total_cost:
+        await interaction.followup.send(f"❌ You need {total_cost:,} xp (you have {xp:,})."); return
 
     prizes = await get_chest_prizes(interaction.guild.id, "chest")
     rare_names = await get_rare_chest_names(interaction.guild.id, "chest")
-    results: dict = {}; total_balance = 0; total_exp_won = 0
+    results: dict = {}; total_balance = 0; total_xp_won = 0
     for _ in range(amount):
         prize = random.choices(prizes, weights=[p["chance"] for p in prizes], k=1)[0]
         results[prize["name"]] = results.get(prize["name"], 0) + 1
-        total_balance += prize["balance"]; total_exp_won += prize["exp"]
+        total_balance += prize["balance"]; total_xp_won += prize["xp"]
 
     gid, uid = interaction.guild.id, interaction.user.id
     await _add_chest_spending(gid, uid, total_cost)
@@ -266,17 +266,17 @@ async def chest(interaction: discord.Interaction, amount: int = 1):
         if cut > 0:
             inviter_id = await get_inviter_of(gid, uid)
             print(f"[InviteCut] {cut:,} coins to inviter {inviter_id} from {uid}'s chest")
-    if total_exp_won > 0: await add_exp(gid, uid, total_exp_won)
+    if total_xp_won > 0: await add_xp(gid, uid, total_xp_won)
     from common import add_stat
     await add_stat(gid, uid, "chests_opened", amount)
 
     result_text = "\n".join(f"• {count}x {name}" for name, count in results.items())
     embed = discord.Embed(title="📦 Chest Results", description=result_text, color=discord.Color.purple())
-    embed.set_footer(text=f"Opened {amount} chest(s) | Cost: {total_cost:,} EXP")
+    embed.set_footer(text=f"Opened {amount} chest(s) | Cost: {total_cost:,} xp")
     await interaction.followup.send(embed=embed)
     results_log = ", ".join(f"{c}x {n}" for n, c in results.items())
     await log_event(gid, "chest", _log_embed("📦 Chest Opened", discord.Color.purple(),
-        User=interaction.user.mention, Opened=str(amount), Cost=f"{total_cost:,} EXP", Won=results_log[:1024]))
+        User=interaction.user.mention, Opened=str(amount), Cost=f"{total_cost:,} xp", Won=results_log[:1024]))
     await _announce_rare(interaction, results, "chest", rare_names)
 
 @bot.command(name="chest")
@@ -307,11 +307,11 @@ async def vipchest(interaction: discord.Interaction, amount: int = 1):
 
     prizes = await get_chest_prizes(interaction.guild.id, "vipchest")
     rare_names = await get_rare_chest_names(interaction.guild.id, "vipchest")
-    results: dict = {}; total_balance = 0; total_exp_won = 0
+    results: dict = {}; total_balance = 0; total_xp_won = 0
     for _ in range(amount):
         prize = random.choices(prizes, weights=[p["chance"] for p in prizes], k=1)[0]
         results[prize["name"]] = results.get(prize["name"], 0) + 1
-        total_balance += prize["balance"]; total_exp_won += prize["exp"]
+        total_balance += prize["balance"]; total_xp_won += prize["xp"]
 
     if total_balance > 0:
         await add_balance(interaction.guild.id, interaction.user.id, total_balance, bot=bot)
@@ -319,7 +319,7 @@ async def vipchest(interaction: discord.Interaction, amount: int = 1):
         if cut > 0:
             inviter_id = await get_inviter_of(gid, uid)
             print(f"[InviteCut] {cut:,} coins to inviter {inviter_id} from {uid}'s chest")
-    if total_exp_won > 0: await add_exp(interaction.guild.id, interaction.user.id, total_exp_won)
+    if total_xp_won > 0: await add_xp(interaction.guild.id, interaction.user.id, total_xp_won)
 
     result_text = "\n".join(f"• {count}x {name}" for name, count in results.items())
     embed = discord.Embed(title="💎 VIP Chest Results", description=result_text, color=discord.Color.from_rgb(148, 0, 211))
@@ -368,7 +368,7 @@ async def _build_chest_embed(guild: discord.Guild) -> discord.Embed:
     embed = discord.Embed(title="📦 Chest Shop",
                           description="Open chests to win prizes!",
                           color=discord.Color.purple())
-    for chest_type, label, cost_str in [("chest","📦 EXP Chest","Cost: 1,000 EXP"),
+    for chest_type, label, cost_str in [("chest","📦 xp Chest","Cost: 1,000 xp"),
                                          ("vipchest","💎 VIP Chest","Cost: 1 VIP Key")]:
         prizes = await get_chest_prizes(guild.id, chest_type)
         total_w = sum(p["chance"] for p in prizes) or 1
@@ -376,7 +376,7 @@ async def _build_chest_embed(guild: discord.Guild) -> discord.Embed:
         for p in prizes:
             pct = p["chance"] / total_w * 100
             desc = []
-            if p["exp"] > 0: desc.append(f"⭐ {p['exp']:,} EXP")
+            if p["xp"] > 0: desc.append(f"⭐ {p['xp']:,} xp")
             if p["balance"] > 0: desc.append(f"💰 {p['balance']:,} coins")
             if not desc: desc.append("✨ Special")
             lines.append(f"• **{p['name']}** — {', '.join(desc)} — {pct:.1f}%")
@@ -408,28 +408,28 @@ async def _refresh_chest_channel(guild: discord.Guild):
             await db.commit()
 
 
-async def _do_open_exp_chests(interaction: discord.Interaction, amount: int):
+async def _do_open_xp_chests(interaction: discord.Interaction, amount: int):
     await interaction.response.defer(ephemeral=True)
     gid, uid = interaction.guild.id, interaction.user.id
     if await is_blacklisted(gid, uid):
         await interaction.followup.send(
             "🚫 You're blacklisted from the economy and can't open chests.", ephemeral=True)
         return
-    exp = await get_exp(gid, uid)
-    if exp < CHEST_COST:
-        await interaction.followup.send(f"❌ You need {CHEST_COST:,} EXP (you have {exp:,}).", ephemeral=True); return
-    max_open = exp // CHEST_COST
+    xp = await get_xp(gid, uid)
+    if xp < CHEST_COST:
+        await interaction.followup.send(f"❌ You need {CHEST_COST:,} xp (you have {xp:,}).", ephemeral=True); return
+    max_open = xp // CHEST_COST
     amount = min(max_open, 100) if amount == -1 else min(amount, max_open)
     if amount == 0:
-        await interaction.followup.send("❌ Not enough EXP.", ephemeral=True); return
+        await interaction.followup.send("❌ Not enough xp.", ephemeral=True); return
     total_cost = CHEST_COST * amount
     prizes = await get_chest_prizes(gid, "chest")
     rare_names = await get_rare_chest_names(gid, "chest")
-    results: dict[str, int] = {}; total_balance = total_exp_won = 0
+    results: dict[str, int] = {}; total_balance = total_xp_won = 0
     for _ in range(amount):
         prize = random.choices(prizes, weights=[p["chance"] for p in prizes], k=1)[0]
         results[prize["name"]] = results.get(prize["name"], 0) + 1
-        total_balance += prize["balance"]; total_exp_won += prize["exp"]
+        total_balance += prize["balance"]; total_xp_won += prize["xp"]
     await _add_chest_spending(gid, uid, total_cost)
     if total_balance > 0:
         await add_balance(gid, uid, total_balance, bot=bot)
@@ -437,16 +437,16 @@ async def _do_open_exp_chests(interaction: discord.Interaction, amount: int):
         if cut > 0:
             inviter_id = await get_inviter_of(gid, uid)
             print(f"[InviteCut] {cut:,} coins to inviter {inviter_id} from {uid}'s chest")
-    if total_exp_won > 0: await add_exp(gid, uid, total_exp_won)
+    if total_xp_won > 0: await add_xp(gid, uid, total_xp_won)
     from common import add_stat
     await add_stat(gid, uid, "chests_opened", amount)
     embed = discord.Embed(title=f"📦 Chest Results ×{amount}",
                           description="\n".join(f"• {c}x **{n}**" for n, c in results.items()), color=discord.Color.purple())
-    embed.set_footer(text=f"Cost: {total_cost:,} EXP | Remaining: {exp - total_cost:,} EXP")
+    embed.set_footer(text=f"Cost: {total_cost:,} xp | Remaining: {xp - total_cost:,} xp")
     await interaction.followup.send(embed=embed, ephemeral=True)
     results_log = ", ".join(f"{c}x {n}" for n, c in results.items())
     await log_event(gid, "chest", _log_embed("📦 Chest Opened", discord.Color.purple(),
-        User=interaction.user.mention, Opened=str(amount), Cost=f"{total_cost:,} EXP", Won=results_log[:1024]))
+        User=interaction.user.mention, Opened=str(amount), Cost=f"{total_cost:,} xp", Won=results_log[:1024]))
     await _announce_rare(interaction, results, "chest", rare_names)
 
 
@@ -468,18 +468,18 @@ async def _do_open_vip_chests(interaction: discord.Interaction, amount: int):
         await interaction.followup.send("❌ Failed to consume keys.", ephemeral=True); return
     prizes = await get_chest_prizes(gid, "vipchest")
     rare_names = await get_rare_chest_names(gid, "vipchest")
-    results: dict[str, int] = {}; total_balance = total_exp_won = 0
+    results: dict[str, int] = {}; total_balance = total_xp_won = 0
     for _ in range(amount):
         prize = random.choices(prizes, weights=[p["chance"] for p in prizes], k=1)[0]
         results[prize["name"]] = results.get(prize["name"], 0) + 1
-        total_balance += prize["balance"]; total_exp_won += prize["exp"]
+        total_balance += prize["balance"]; total_xp_won += prize["xp"]
     if total_balance > 0:
         await add_balance(gid, uid, total_balance, bot=bot)
         cut = await award_inviter_chest_cut(gid, uid, total_balance, bot=bot)
         if cut > 0:
             inviter_id = await get_inviter_of(gid, uid)
             print(f"[InviteCut] {cut:,} coins to inviter {inviter_id} from {uid}'s chest")
-    if total_exp_won > 0: await add_exp(gid, uid, total_exp_won)
+    if total_xp_won > 0: await add_xp(gid, uid, total_xp_won)
     embed = discord.Embed(title=f"💎 VIP Chest Results ×{amount}",
                           description="\n".join(f"• {c}x **{n}**" for n, c in results.items()),
                           color=discord.Color.from_rgb(148, 0, 211))
@@ -495,30 +495,30 @@ class ChestChannelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="⭐ My EXP", style=discord.ButtonStyle.secondary, custom_id="chest_panel:check_exp", row=0)
-    async def check_exp(self, interaction: discord.Interaction, btn):
+    @discord.ui.button(label="⭐ My xp", style=discord.ButtonStyle.secondary, custom_id="chest_panel:check_xp", row=0)
+    async def check_xp(self, interaction: discord.Interaction, btn):
         gid, uid = interaction.guild.id, interaction.user.id
-        exp = await get_exp(gid, uid); lvl = await get_level(gid, uid)
+        xp = await get_xp(gid, uid); lvl = await get_level(gid, uid)
         inv = await inventory_get(gid, uid)
         keys = next((q for n, q in inv if n.lower() == VIP_CHEST_KEY.lower()), 0)
         embed = discord.Embed(title=f"⭐ {interaction.user.display_name}", color=discord.Color.gold())
         embed.add_field(name="Activity Rank", value=str(lvl), inline=True)
-        embed.add_field(name="Usable EXP", value=f"{exp:,}", inline=True)
-        embed.add_field(name="Chests Available", value=f"{exp // CHEST_COST}", inline=True)
+        embed.add_field(name="Usable xp", value=f"{xp:,}", inline=True)
+        embed.add_field(name="Chests Available", value=f"{xp // CHEST_COST}", inline=True)
         embed.add_field(name="VIP Keys", value=str(keys), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="📦 ×1", style=discord.ButtonStyle.primary, custom_id="chest_panel:open_exp_1", row=0)
-    async def open_exp_1(self, interaction: discord.Interaction, btn):
-        await _do_open_exp_chests(interaction, 1)
+    @discord.ui.button(label="📦 ×1", style=discord.ButtonStyle.primary, custom_id="chest_panel:open_xp_1", row=0)
+    async def open_xp_1(self, interaction: discord.Interaction, btn):
+        await _do_open_xp_chests(interaction, 1)
 
-    @discord.ui.button(label="📦 ×10", style=discord.ButtonStyle.primary, custom_id="chest_panel:open_exp_10", row=0)
-    async def open_exp_10(self, interaction: discord.Interaction, btn):
-        await _do_open_exp_chests(interaction, 10)
+    @discord.ui.button(label="📦 ×10", style=discord.ButtonStyle.primary, custom_id="chest_panel:open_xp_10", row=0)
+    async def open_xp_10(self, interaction: discord.Interaction, btn):
+        await _do_open_xp_chests(interaction, 10)
 
-    @discord.ui.button(label="📦 ×Max", style=discord.ButtonStyle.primary, custom_id="chest_panel:open_exp_max", row=0)
-    async def open_exp_max(self, interaction: discord.Interaction, btn):
-        await _do_open_exp_chests(interaction, -1)
+    @discord.ui.button(label="📦 ×Max", style=discord.ButtonStyle.primary, custom_id="chest_panel:open_xp_max", row=0)
+    async def open_xp_max(self, interaction: discord.Interaction, btn):
+        await _do_open_xp_chests(interaction, -1)
 
     @discord.ui.button(label="💎 VIP ×1", style=discord.ButtonStyle.success, custom_id="chest_panel:open_vip_1", row=1)
     async def open_vip_1(self, interaction: discord.Interaction, btn):
@@ -648,11 +648,11 @@ async def cmd_removebox(ctx, *, name: str):
 
 @bot.tree.command(name="addboxprize", description="Add a prize to a box")
 @app_commands.describe(box="Box name", prize_type="Type of prize", chance="Weight",
-                       amount="Amount for balance/exp", item_name="Item name for items",
+                       amount="Amount for balance/xp", item_name="Item name for items",
                        custom_label="Label for nothing/custom")
 @app_commands.choices(prize_type=[
     app_commands.Choice(name="Balance", value="balance"),
-    app_commands.Choice(name="EXP", value="exp"),
+    app_commands.Choice(name="xp", value="xp"),
     app_commands.Choice(name="Item", value="item"),
     app_commands.Choice(name="Nothing", value="nothing"),
     app_commands.Choice(name="Custom", value="custom"),
@@ -669,7 +669,7 @@ async def addboxprize(interaction: discord.Interaction, box: str, prize_type: st
                               (interaction.guild.id, box)) as cur:
             if not await cur.fetchone():
                 await interaction.response.send_message(f"❌ Box **{box}** not found.", ephemeral=True); return
-    if prize_type in ("balance", "exp"):
+    if prize_type in ("balance", "xp"):
         if amount <= 0:
             await interaction.response.send_message("❌ Provide amount > 0.", ephemeral=True); return
         prize_value = str(amount)
@@ -696,8 +696,8 @@ async def addboxprize(interaction: discord.Interaction, box: str, prize_type: st
 async def pfx_addboxprize(ctx, box: str, prize_type: str, chance: int,
                            amount: int = 0, item_name: str = None, *, custom_label: str = None):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    if prize_type not in ("balance","exp","item","nothing","custom"):
-        await ctx.send("❌ Valid types: balance, exp, item, nothing, custom"); return
+    if prize_type not in ("balance","xp","item","nothing","custom"):
+        await ctx.send("❌ Valid types: balance, xp, item, nothing, custom"); return
     await addboxprize._callback(FakeInteraction(ctx), box, prize_type, chance, amount, item_name, custom_label)
 
 @bot.command(name="removeboxprize")
@@ -731,7 +731,7 @@ async def cmd_listboxes(ctx, *, box: str = None):
         for p_id, p_type, p_value, p_chance in prizes:
             pct = (p_chance / total_w * 100) if total_w > 0 else 0
             desc = (f"💰 {int(p_value):,} coins" if p_type == "balance" else
-                    f"⭐ {int(p_value):,} EXP" if p_type == "exp" else
+                    f"⭐ {int(p_value):,} xp" if p_type == "xp" else
                     f"🎒 {p_value}" if p_type == "item" else f"✨ {p_value}")
             lines.append(f"`#{p_id}` {desc} — **{pct:.1f}%**")
         embed.add_field(name=f"📦 {box_name}", value="\n".join(lines), inline=False)
@@ -813,14 +813,14 @@ async def openbox(interaction: discord.Interaction, box: str, amount: int = 1):
 
     rare_ids = await get_rare_box_ids(interaction.guild.id, canonical_box)
     results: dict[str, int] = {}; rare_wins: dict[str, int] = {}
-    total_balance = 0; total_exp = 0; item_grants: dict[str, int] = {}
+    total_balance = 0; total_xp = 0; item_grants: dict[str, int] = {}
 
     for _ in range(amount):
         p_id, p_type, p_value, p_amount, _ = random.choices(prizes, weights=[p[4] for p in prizes], k=1)[0]
         if p_type == "balance":
             amt = int(p_value); total_balance += amt; label = f"💰 {amt:,} coins"
-        elif p_type == "exp":
-            amt = int(p_value); total_exp += amt; label = f"⭐ {amt:,} EXP"
+        elif p_type == "xp":
+            amt = int(p_value); total_xp += amt; label = f"⭐ {amt:,} xp"
         elif p_type == "item":
             item_grants[p_value] = item_grants.get(p_value, 0) + 1; label = f"🎒 {p_value}"
         elif p_type == "nothing": label = f"😔 {p_value}"
@@ -830,7 +830,7 @@ async def openbox(interaction: discord.Interaction, box: str, amount: int = 1):
 
     gid = interaction.guild.id
     if total_balance > 0: await add_balance(gid, interaction.user.id, total_balance, bot=bot)
-    if total_exp > 0: await add_exp(gid, interaction.user.id, total_exp)
+    if total_xp > 0: await add_xp(gid, interaction.user.id, total_xp)
     for iname, qty in item_grants.items():
         si = await get_item(gid, iname)
         await inventory_add(gid, interaction.user.id, si[1] if si else iname, qty)
@@ -1309,7 +1309,7 @@ async def _run_power_giveaway_roll(guild: discord.Guild, cfg: tuple):
     else:
         winner_ids = _weighted_sample_without_replacement(list(totals.items()), winners_count)
         winner_members = [m for m in (guild.get_member(uid) for uid in winner_ids) if m]
-        meta = {"label": prize, "balance": rb, "exp": re_, "tickets": rt, "gamble_tokens": rgt,
+        meta = {"label": prize, "balance": rb, "xp": re_, "tickets": rt, "gamble_tokens": rgt,
                 "vip_keys": rvk, "role_id": rrole, "item": ritem, "item_qty": riqty if ritem else 0}
         if winner_members: await distribute_prizes(guild, winner_members, meta)
         if winners_ch and winner_members:
@@ -1331,7 +1331,7 @@ async def _run_power_giveaway_roll(guild: discord.Guild, cfg: tuple):
 async def _build_power_giveaway_embed(guild: discord.Guild, cfg: tuple) -> discord.Embed:
     (gid, name, prize, winners_count, interval_seconds, embed_ch_id, winners_ch_id,
      default_entries, rb, re_, rt, rgt, rvk, rrole, ritem, riqty, running, embed_msg_id, next_roll) = cfg
-    meta = {"balance": rb, "exp": re_, "tickets": rt, "gamble_tokens": rgt, "vip_keys": rvk,
+    meta = {"balance": rb, "xp": re_, "tickets": rt, "gamble_tokens": rgt, "vip_keys": rvk,
             "role_id": rrole, "item": ritem, "item_qty": riqty if ritem else 0}
     reward_str = build_reward_summary(meta, guild)
     totals = await _compute_power_entries(guild, name, default_entries)
@@ -1390,7 +1390,7 @@ async def power_giveaway_loop():
             async with get_db() as db:
                 async with db.execute(
                     "SELECT guild_id,name,prize,winners,interval_seconds,embed_channel_id,"
-                    "winners_channel_id,default_entries,reward_balance,reward_exp,reward_tickets,"
+                    "winners_channel_id,default_entries,reward_balance,reward_xp,reward_tickets,"
                     "reward_gamble_tokens,reward_vip_keys,reward_role_id,reward_item,reward_item_qty,"
                     "running,embed_message_id,next_roll_time "
                     "FROM power_giveaway_config WHERE running=1") as cur:
@@ -1428,14 +1428,14 @@ bot.tree.add_command(power_group)
     prize="Prize description", winners="Winners per roll", interval_seconds="Seconds between rolls",
     embed_channel="Live info embed channel", winners_channel="Winners announcement channel",
     default_entries="Base entries for everyone (default 0)",
-    reward_balance="Coins per winner", reward_exp="EXP per winner",
+    reward_balance="Coins per winner", reward_xp="xp per winner",
     reward_tickets="Mega tickets per winner", reward_gamble_tokens="Gamble tokens per winner",
     reward_vip_keys="VIP keys per winner", reward_role="Role given to each winner",
     reward_item="Item/box per winner", reward_item_qty="Quantity of item (default 1)")
 async def power_setup(interaction: discord.Interaction, name: str, prize: str, winners: int,
                        interval_seconds: int, embed_channel: discord.TextChannel,
                        winners_channel: discord.TextChannel, default_entries: int = 0,
-                       reward_balance: int = 0, reward_exp: int = 0, reward_tickets: int = 0,
+                       reward_balance: int = 0, reward_xp: int = 0, reward_tickets: int = 0,
                        reward_gamble_tokens: int = 0, reward_vip_keys: int = 0,
                        reward_role: discord.Role = None, reward_item: str = None, reward_item_qty: int = 1):
     if not await is_allowed_to_giveaway(interaction):
@@ -1449,7 +1449,7 @@ async def power_setup(interaction: discord.Interaction, name: str, prize: str, w
         async with get_db() as db:
             await db.execute(
                 "INSERT INTO power_giveaway_config(guild_id,name,prize,winners,interval_seconds,"
-                "embed_channel_id,winners_channel_id,default_entries,reward_balance,reward_exp,"
+                "embed_channel_id,winners_channel_id,default_entries,reward_balance,reward_xp,"
                 "reward_tickets,reward_gamble_tokens,reward_vip_keys,reward_role_id,reward_item,"
                 "reward_item_qty,running,embed_message_id,next_roll_time) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0) "
@@ -1457,12 +1457,12 @@ async def power_setup(interaction: discord.Interaction, name: str, prize: str, w
                 "prize=excluded.prize,winners=excluded.winners,interval_seconds=excluded.interval_seconds,"
                 "embed_channel_id=excluded.embed_channel_id,winners_channel_id=excluded.winners_channel_id,"
                 "default_entries=excluded.default_entries,reward_balance=excluded.reward_balance,"
-                "reward_exp=excluded.reward_exp,reward_tickets=excluded.reward_tickets,"
+                "reward_xp=excluded.reward_xp,reward_tickets=excluded.reward_tickets,"
                 "reward_gamble_tokens=excluded.reward_gamble_tokens,reward_vip_keys=excluded.reward_vip_keys,"
                 "reward_role_id=excluded.reward_role_id,reward_item=excluded.reward_item,"
                 "reward_item_qty=excluded.reward_item_qty",
                 (interaction.guild.id, name, prize, winners, interval_seconds, embed_channel.id, winners_channel.id,
-                 default_entries, reward_balance, reward_exp, reward_tickets, reward_gamble_tokens,
+                 default_entries, reward_balance, reward_xp, reward_tickets, reward_gamble_tokens,
                  reward_vip_keys, reward_role.id if reward_role else 0, reward_item, reward_item_qty))
             await db.commit()
     await interaction.response.send_message(
@@ -1593,7 +1593,7 @@ async def power_status(interaction: discord.Interaction, name: str):
     async with get_db() as db:
         async with db.execute(
             "SELECT guild_id,name,prize,winners,interval_seconds,embed_channel_id,winners_channel_id,"
-            "default_entries,reward_balance,reward_exp,reward_tickets,reward_gamble_tokens,reward_vip_keys,"
+            "default_entries,reward_balance,reward_xp,reward_tickets,reward_gamble_tokens,reward_vip_keys,"
             "reward_role_id,reward_item,reward_item_qty,running,embed_message_id,next_roll_time "
             "FROM power_giveaway_config WHERE guild_id=? AND name=?", (gid, name)) as cur:
             cfg = await cur.fetchone()
@@ -1639,10 +1639,10 @@ async def pfx_powergiveaway(ctx):
 @pfx_powergiveaway.command(name="setup")
 async def pfx_power_setup(ctx, name: str, prize: str, winners: int, interval_seconds: int,
                           embed_channel: discord.TextChannel, winners_channel: discord.TextChannel,
-                          default_entries: int = 0, reward_balance: int = 0, reward_exp: int = 0):
+                          default_entries: int = 0, reward_balance: int = 0, reward_xp: int = 0):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
     await power_setup._callback(FakeInteraction(ctx), name, prize, winners, interval_seconds,
-                                embed_channel, winners_channel, default_entries, reward_balance, reward_exp,
+                                embed_channel, winners_channel, default_entries, reward_balance, reward_xp,
                                 0, 0, 0, None, None, 1)
 
 @pfx_powergiveaway.command(name="setrole")
@@ -1844,7 +1844,7 @@ async def slash_listboxes(interaction: discord.Interaction, box: str = None):
         for p_id, p_type, p_value, p_chance in prizes:
             pct = (p_chance / total_w * 100) if total_w > 0 else 0
             desc = (f"💰 {int(p_value):,}" if p_type == "balance" else
-                    f"⭐ {int(p_value):,} EXP" if p_type == "exp" else
+                    f"⭐ {int(p_value):,} xp" if p_type == "xp" else
                     f"🎒 {p_value}" if p_type == "item" else f"✨ {p_value}")
             lines.append(f"`#{p_id}` {desc} — **{pct:.1f}%**")
         embed.add_field(name=f"📦 {box_name}", value="\n".join(lines), inline=False)
@@ -1977,12 +1977,12 @@ async def slash_givekeyrole(interaction: discord.Interaction, role: discord.Role
         f"🔑 Gave **{amount}x {VIP_CHEST_KEY}** to **{len(members)}** member(s) with {role.mention}.")
 
 _CHEST_TYPE_DESC_CHOICES = [
-    app_commands.Choice(name="EXP Chest",  value="chest"),
+    app_commands.Choice(name="xp Chest",  value="chest"),
     app_commands.Choice(name="VIP Chest",  value="vipchest"),
 ]
 
 @bot.tree.command(name="listchestprizes",
-                  description="List all prizes in the EXP or VIP chest loot table")
+                  description="List all prizes in the xp or VIP chest loot table")
 @app_commands.describe(chest_type="Which chest to list")
 @app_commands.choices(chest_type=_CHEST_TYPE_DESC_CHOICES)
 @command_enabled()
@@ -1995,12 +1995,12 @@ async def slash_listchestprizes(interaction: discord.Interaction, chest_type: st
     for p in prizes:
         pct  = (p["chance"] / total_w * 100) if total_w > 0 else 0
         desc = []
-        if p["exp"] > 0:     desc.append(f"⭐{p['exp']:,}")
+        if p["xp"] > 0:     desc.append(f"⭐{p['xp']:,}")
         if p["balance"] > 0: desc.append(f"💰{p['balance']:,}")
         if not desc:         desc.append("✨Special")
         id_str = f"`#{p['id']}` " if "id" in p else ""
         lines.append(f"{id_str}**{p['name']}** — {' + '.join(desc)} — **{pct:.1f}%** (w:{p['chance']})")
-    title = "📦 EXP Chest Prizes" if chest_type == "chest" else "💎 VIP Chest Prizes"
+    title = "📦 xp Chest Prizes" if chest_type == "chest" else "💎 VIP Chest Prizes"
     pages = paginate_lines(lines, title, discord.Color.purple())
     if not is_custom:
         pages[0].set_footer(text=f"Using default prizes — Page 1/{len(pages)}")
@@ -2017,12 +2017,12 @@ async def cmd_listchestprizes(ctx, chest_type: str = "chest"):
     for p in prizes:
         pct  = (p["chance"] / total_w * 100) if total_w > 0 else 0
         desc = []
-        if p["exp"] > 0:     desc.append(f"⭐{p['exp']:,}")
+        if p["xp"] > 0:     desc.append(f"⭐{p['xp']:,}")
         if p["balance"] > 0: desc.append(f"💰{p['balance']:,}")
         if not desc:         desc.append("✨Special")
         id_str = f"`#{p['id']}` " if "id" in p else ""
         lines.append(f"{id_str}**{p['name']}** — {' + '.join(desc)} — **{pct:.1f}%** (w:{p['chance']})")
-    title = "📦 EXP Chest Prizes" if chest_type == "chest" else "💎 VIP Chest Prizes"
+    title = "📦 xp Chest Prizes" if chest_type == "chest" else "💎 VIP Chest Prizes"
     pages = paginate_lines(lines, title, discord.Color.purple())
     if not is_custom:
         pages[0].set_footer(text=f"Using default prizes — Page 1/{len(pages)}")
