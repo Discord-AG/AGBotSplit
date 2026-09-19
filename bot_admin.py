@@ -1906,21 +1906,6 @@ class TradeInitialView(discord.ui.View):
 
         await interaction.response.send_modal(DepositAmountModal())
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, custom_id="trade_cancel_initial")
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        channel = interaction.channel
-        state = trade_states.get(channel.id)
-
-        if not state:
-            return await interaction.response.send_message("Trade session lost.", ephemeral=True)
-
-        if interaction.user.id not in [state.creator_id, state.target_id]:
-            return await interaction.response.send_message("Only trade participants can cancel.", ephemeral=True)
-
-        await interaction.response.send_message("Trade cancelled. Closing ticket...")
-        await close_ticket_process(channel, interaction.guild, interaction.client)
-
-
 class TradeActiveView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
