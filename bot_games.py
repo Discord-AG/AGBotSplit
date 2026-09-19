@@ -8,7 +8,7 @@ import common
 from common import (
     get_db, db_lock, setup_database, log_event, _log_embed, command_enabled,
     is_allowed_to_giveaway, _is_allowed_ctx,
-    get_balance, add_balance, get_exp, add_exp, get_level,
+    get_balance, add_balance, get_xp, add_xp, get_level,
     inventory_add, inventory_remove, inventory_get,
     get_tickets, add_tickets, _weighted_sample_without_replacement,
     distribute_prizes, build_reward_summary, add_stat, ensure_stats,
@@ -137,14 +137,14 @@ async def _send_giveaway_game_notify(guild_id: int, prize_text: str, channel, ex
 @bot.tree.command(name="giveaway", description="Create a giveaway")
 @app_commands.describe(
     prize="Prize description", seconds="Duration in seconds", winners="Number of winners",
-    reward_balance="Coin reward per winner", reward_exp="EXP reward per winner",
+    reward_balance="Coin reward per winner", reward_xp="xp reward per winner",
     reward_tickets="Mega tickets per winner", reward_gamble_tokens="Gamble tokens per winner",
     reward_vip_keys="VIP Chest Keys per winner", reward_role="Role to give each winner",
     reward_item="Item/box name per winner", reward_item_qty="How many of the item (default 1)",
     channel="Channel to post in", required_role="Required role to enter", template="Color (gold/red/blue/green)")
 @command_enabled()
 async def giveaway(interaction: discord.Interaction, prize: str, seconds: int, winners: int,
-    reward_balance: int = 0, reward_exp: int = 0, reward_tickets: int = 0,
+    reward_balance: int = 0, reward_xp: int = 0, reward_tickets: int = 0,
     reward_gamble_tokens: int = 0, reward_vip_keys: int = 0,
     reward_role: discord.Role = None, reward_item: str = None, reward_item_qty: int = 1,
     channel: discord.TextChannel = None, required_role: discord.Role = None, template: str = "gold"):
@@ -165,7 +165,7 @@ async def giveaway(interaction: discord.Interaction, prize: str, seconds: int, w
 
     reward_parts = []
     if reward_balance > 0:       reward_parts.append(f"💰 {reward_balance:,} coins")
-    if reward_exp > 0:           reward_parts.append(f"⭐ {reward_exp:,} EXP")
+    if reward_xp > 0:           reward_parts.append(f"⭐ {reward_xp:,} xp")
     if reward_tickets > 0:       reward_parts.append(f"🎟 {reward_tickets} ticket(s)")
     if reward_gamble_tokens > 0: reward_parts.append(f"🎲 {reward_gamble_tokens} gamble token(s)")
     if reward_vip_keys > 0:      reward_parts.append(f"🔑 {reward_vip_keys} VIP key(s)")
@@ -185,7 +185,7 @@ async def giveaway(interaction: discord.Interaction, prize: str, seconds: int, w
     await message.add_reaction("🎉")
 
     prize_meta = json.dumps({
-        "label": prize, "balance": reward_balance, "exp": reward_exp,
+        "label": prize, "balance": reward_balance, "xp": reward_xp,
         "tickets": reward_tickets, "gamble_tokens": reward_gamble_tokens, "vip_keys": reward_vip_keys,
         "role_id": reward_role.id if reward_role else 0,
         "item": resolved_item, "item_qty": reward_item_qty if resolved_item else 0,
@@ -211,9 +211,9 @@ async def giveaway(interaction: discord.Interaction, prize: str, seconds: int, w
 
 @bot.command(name="giveaway")
 async def pfx_giveaway(ctx, prize: str, seconds: int, winners: int = 1,
-                        reward_balance: int = 0, reward_exp: int = 0):
+                        reward_balance: int = 0, reward_xp: int = 0):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    await giveaway._callback(FakeInteraction(ctx), prize, seconds, winners, reward_balance, reward_exp,
+    await giveaway._callback(FakeInteraction(ctx), prize, seconds, winners, reward_balance, reward_xp,
                               0, 0, 0, None, None, 1, None, None, "gold")
 
 # ═══════════════════════════════════════════════════════
@@ -289,7 +289,7 @@ async def host(interaction: discord.Interaction,
     await message.add_reaction("🎉")
 
     prize_meta = json.dumps({
-        "label": prize, "balance": per_winner, "exp": 0, "tickets": 0,
+        "label": prize, "balance": per_winner, "xp": 0, "tickets": 0,
         "gamble_tokens": 0, "vip_keys": 0, "role_id": 0, "item": None, "item_qty": 0,
     })
     async with get_db() as db:
@@ -483,7 +483,7 @@ async def auto_giveaway_loop(guild_id: int):
 
         async with get_db() as db:
             async with db.execute(
-                "SELECT id,prize,winners,chance,reward_balance,reward_exp,reward_tickets,"
+                "SELECT id,prize,winners,chance,reward_balance,reward_xp,reward_tickets,"
                 "reward_gamble_tokens,reward_vip_keys,reward_role_id,reward_item,reward_item_qty "
                 "FROM auto_giveaway_pool WHERE guild_id=?", (guild_id,)) as cur:
                 pool = await cur.fetchall()
@@ -496,7 +496,7 @@ async def auto_giveaway_loop(guild_id: int):
 
         reward_parts = []
         if rb > 0:  reward_parts.append(f"💰 {rb:,} coins")
-        if re > 0:  reward_parts.append(f"⭐ {re:,} EXP")
+        if re > 0:  reward_parts.append(f"⭐ {re:,} xp")
         if rt > 0:  reward_parts.append(f"🎟 {rt} ticket(s)")
         if rgt > 0: reward_parts.append(f"🎲 {rgt} gamble token(s)")
         if rvk > 0: reward_parts.append(f"🔑 {rvk} VIP key(s)")
@@ -516,7 +516,7 @@ async def auto_giveaway_loop(guild_id: int):
         if await _is_auto_enterable(guild_id, rb):
             await _send_giveaway_game_notify(guild_id, prize, channel, extra_line="🤖 Hosted by Auto Giveaway")
 
-        prize_meta = json.dumps({"label": prize, "balance": rb, "exp": re, "tickets": rt,
+        prize_meta = json.dumps({"label": prize, "balance": rb, "xp": re, "tickets": rt,
                                   "gamble_tokens": rgt, "vip_keys": rvk, "role_id": rrole,
                                   "item": ri, "item_qty": riq if ri else 0})
         async with get_db() as db:
@@ -533,13 +533,13 @@ async def auto_giveaway_loop(guild_id: int):
 @app_commands.describe(
     prize="Prize description", winners="Number of winners (default 1)",
     chance="Selection weight — higher = picked more often (default 1.0)",
-    reward_balance="Coin reward per winner", reward_exp="EXP reward per winner",
+    reward_balance="Coin reward per winner", reward_xp="xp reward per winner",
     reward_tickets="Mega tickets per winner", reward_gamble_tokens="Gamble tokens per winner",
     reward_vip_keys="VIP Chest Keys per winner", reward_role="Role to give each winner",
     reward_item="Item or box name per winner", reward_item_qty="Quantity of item reward (default 1)")
 @command_enabled()
 async def addautogiveaway(interaction: discord.Interaction, prize: str, winners: int = 1, chance: float = 1.0,
-    reward_balance: int = 0, reward_exp: int = 0, reward_tickets: int = 0, reward_gamble_tokens: int = 0,
+    reward_balance: int = 0, reward_xp: int = 0, reward_tickets: int = 0, reward_gamble_tokens: int = 0,
     reward_vip_keys: int = 0, reward_role: discord.Role = None, reward_item: str = None, reward_item_qty: int = 1):
     if not await is_allowed_to_giveaway(interaction):
         await interaction.response.send_message("❌ No permission.", ephemeral=True); return
@@ -550,17 +550,17 @@ async def addautogiveaway(interaction: discord.Interaction, prize: str, winners:
     async with db_lock:
         async with get_db() as db:
             cur = await db.execute(
-                "INSERT INTO auto_giveaway_pool(guild_id,prize,winners,chance,reward_balance,reward_exp,"
+                "INSERT INTO auto_giveaway_pool(guild_id,prize,winners,chance,reward_balance,reward_xp,"
                 "reward_tickets,reward_gamble_tokens,reward_vip_keys,reward_role_id,reward_item,reward_item_qty) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (interaction.guild.id, prize, winners, chance, reward_balance, reward_exp, reward_tickets,
+                (interaction.guild.id, prize, winners, chance, reward_balance, reward_xp, reward_tickets,
                  reward_gamble_tokens, reward_vip_keys, reward_role.id if reward_role else 0,
                  reward_item, reward_item_qty))
             new_id = cur.lastrowid
             await db.commit()
     parts = []
     if reward_balance > 0: parts.append(f"💰 {reward_balance:,}")
-    if reward_exp > 0: parts.append(f"⭐ {reward_exp:,} EXP")
+    if reward_xp > 0: parts.append(f"⭐ {reward_xp:,} xp")
     if reward_tickets > 0: parts.append(f"🎟 {reward_tickets}")
     if reward_gamble_tokens > 0: parts.append(f"🎲 {reward_gamble_tokens}")
     if reward_vip_keys > 0: parts.append(f"🔑 {reward_vip_keys}")
@@ -572,9 +572,9 @@ async def addautogiveaway(interaction: discord.Interaction, prize: str, winners:
 
 @bot.command(name="addautogiveaway")
 async def pfx_addautogiveaway(ctx, prize: str, winners: int = 1, chance: float = 1.0,
-                               reward_balance: int = 0, reward_exp: int = 0):
+                               reward_balance: int = 0, reward_xp: int = 0):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    await addautogiveaway._callback(FakeInteraction(ctx), prize, winners, chance, reward_balance, reward_exp,
+    await addautogiveaway._callback(FakeInteraction(ctx), prize, winners, chance, reward_balance, reward_xp,
                                     0, 0, 0, None, None, 1)
 
 @bot.tree.command(name="startgiveaways", description="Start automatic giveaways")
@@ -677,7 +677,7 @@ async def mywinnings(interaction: discord.Interaction, user: discord.Member = No
             ae_row = await cur.fetchone()
     ae_status = "✅ On" if (ae_row and ae_row[0]) else "🔒 Off"
 
-    totals: dict[str, int] = {"balance": 0, "exp": 0, "tickets": 0, "gamble_tokens": 0, "vip_keys": 0}
+    totals: dict[str, int] = {"balance": 0, "xp": 0, "tickets": 0, "gamble_tokens": 0, "vip_keys": 0}
     for _, prize_raw, _, _ in rows:
         try:
             meta = json.loads(prize_raw)
@@ -688,7 +688,7 @@ async def mywinnings(interaction: discord.Interaction, user: discord.Member = No
 
     reward_parts = []
     if totals["balance"] > 0:       reward_parts.append(f"💰 {totals['balance']:,} coins")
-    if totals["exp"] > 0:           reward_parts.append(f"⭐ {totals['exp']:,} EXP")
+    if totals["xp"] > 0:           reward_parts.append(f"⭐ {totals['xp']:,} xp")
     if totals["tickets"] > 0:       reward_parts.append(f"🎟 {totals['tickets']:,} tickets")
     if totals["gamble_tokens"] > 0: reward_parts.append(f"🎲 {totals['gamble_tokens']:,} tokens")
     if totals["vip_keys"] > 0:      reward_parts.append(f"🔑 {totals['vip_keys']:,} VIP keys")
@@ -1474,7 +1474,7 @@ async def slash_removeautogiveaway(interaction: discord.Interaction, entry_id: i
 async def slash_listautogiveaways(interaction: discord.Interaction):
     async with get_db() as db:
         async with db.execute(
-            "SELECT id,prize,winners,chance,reward_balance,reward_exp FROM auto_giveaway_pool "
+            "SELECT id,prize,winners,chance,reward_balance,reward_xp FROM auto_giveaway_pool "
             "WHERE guild_id=? ORDER BY id", (interaction.guild.id,)) as cur:
             rows = await cur.fetchall()
     if not rows:
@@ -1562,14 +1562,14 @@ async def slash_disablegame(interaction: discord.Interaction, name: str):
 @bot.tree.command(name="editgame", description="Edit a game's rewards, chance, or answer time")
 @app_commands.describe(
     name="Game name", reward_balance="New coin reward (blank = keep current)",
-    reward_exp="New EXP reward", reward_tickets="New ticket reward",
+    reward_xp="New xp reward", reward_tickets="New ticket reward",
     reward_gamble_tokens="New gamble token reward", reward_vip_keys="New VIP key reward",
     reward_item="New item reward", reward_item_qty="New item quantity",
     reward_role="New role reward", chance="New selection weight",
     answer_time="New answer time in seconds")
 @command_enabled()
 async def slash_editgame(interaction: discord.Interaction, name: str,
-    reward_balance: int = None, reward_exp: int = None, reward_tickets: int = None,
+    reward_balance: int = None, reward_xp: int = None, reward_tickets: int = None,
     reward_gamble_tokens: int = None, reward_vip_keys: int = None,
     reward_item: str = None, reward_item_qty: int = None,
     reward_role: discord.Role = None, chance: float = None, answer_time: int = None):
@@ -1577,7 +1577,7 @@ async def slash_editgame(interaction: discord.Interaction, name: str,
         await interaction.response.send_message("❌ No permission.", ephemeral=True); return
     async with get_db() as db:
         async with db.execute(
-            "SELECT reward_balance,reward_exp,reward_tickets,reward_gamble_tokens,reward_vip_keys,"
+            "SELECT reward_balance,reward_xp,reward_tickets,reward_gamble_tokens,reward_vip_keys,"
             "reward_item,reward_item_qty,reward_role_id,chance,answer_time FROM games "
             "WHERE guild_id=? AND game_name=?", (interaction.guild.id, name)) as cur:
             row = await cur.fetchone()
@@ -1586,7 +1586,7 @@ async def slash_editgame(interaction: discord.Interaction, name: str,
     (cur_rb, cur_re, cur_rt, cur_rgt, cur_rvk, cur_ri, cur_riq,
      cur_rr, cur_chance, cur_atime) = row
     new_rb    = reward_balance        if reward_balance      is not None else cur_rb
-    new_re    = reward_exp            if reward_exp          is not None else cur_re
+    new_re    = reward_xp            if reward_xp          is not None else cur_re
     new_rt    = reward_tickets        if reward_tickets      is not None else cur_rt
     new_rgt   = reward_gamble_tokens  if reward_gamble_tokens is not None else cur_rgt
     new_rvk   = reward_vip_keys       if reward_vip_keys     is not None else cur_rvk
@@ -1598,7 +1598,7 @@ async def slash_editgame(interaction: discord.Interaction, name: str,
     async with db_lock:
         async with get_db() as db:
             await db.execute(
-                "UPDATE games SET reward_balance=?,reward_exp=?,reward_tickets=?,"
+                "UPDATE games SET reward_balance=?,reward_xp=?,reward_tickets=?,"
                 "reward_gamble_tokens=?,reward_vip_keys=?,reward_item=?,reward_item_qty=?,"
                 "reward_role_id=?,chance=?,answer_time=? WHERE guild_id=? AND game_name=?",
                 (new_rb, new_re, new_rt, new_rgt, new_rvk, new_ri, new_riq,
@@ -1613,10 +1613,10 @@ async def slash_editgame(interaction: discord.Interaction, name: str,
 @bot.command(name="editgame")
 async def pfx_editgame(ctx, name: str, field: str, *, value: str):
     """Edit one field at a time: !editgame <name> <field> <value>
-    Fields: balance, exp, tickets, gamble_tokens, vip_keys, item, item_qty, chance, answer_time"""
+    Fields: balance, xp, tickets, gamble_tokens, vip_keys, item, item_qty, chance, answer_time"""
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
     field_map = {
-        "balance": "reward_balance", "exp": "reward_exp", "tickets": "reward_tickets",
+        "balance": "reward_balance", "xp": "reward_xp", "tickets": "reward_tickets",
         "gamble_tokens": "reward_gamble_tokens", "vip_keys": "reward_vip_keys",
         "item": "reward_item", "item_qty": "reward_item_qty",
         "chance": "chance", "answer_time": "answer_time",
@@ -1714,7 +1714,7 @@ async def slash_listgames(interaction: discord.Interaction, game_name: str = Non
     if game_name is None:
         async with get_db() as db:
             async with db.execute(
-                "SELECT game_name,enabled,reward_balance,reward_exp,chance,answer_time "
+                "SELECT game_name,enabled,reward_balance,reward_xp,chance,answer_time "
                 "FROM games WHERE guild_id=?", (gid,)) as cur:
                 games = await cur.fetchall()
         if not games:
@@ -1748,7 +1748,7 @@ async def pfx_listgames_paginated(ctx, *, game_name: str = None):
     if game_name is None:
         async with get_db() as db:
             async with db.execute(
-                "SELECT game_name,enabled,reward_balance,reward_exp,chance,answer_time "
+                "SELECT game_name,enabled,reward_balance,reward_xp,chance,answer_time "
                 "FROM games WHERE guild_id=?", (gid,)) as cur:
                 games = await cur.fetchall()
         if not games: await ctx.send("❌ No games configured."); return
@@ -1918,7 +1918,7 @@ async def pfx_listautogiveaways_new(ctx):
 @bot.tree.command(name="addgame", description="Add a random game to the pool")
 @app_commands.describe(
     name="The question/prompt shown to players",
-    reward_balance="Coin reward for winner", reward_exp="EXP reward for winner",
+    reward_balance="Coin reward for winner", reward_xp="xp reward for winner",
     reward_tickets="Mega ticket reward", reward_gamble_tokens="Gamble token reward",
     reward_vip_keys="VIP Chest Key reward", reward_item="Item or box name reward",
     reward_item_qty="Quantity of item reward (default 1)", reward_role="Role to give the winner",
@@ -1926,7 +1926,7 @@ async def pfx_listautogiveaways_new(ctx):
     answer_time="Seconds players have to answer this game (default 30)")
 @command_enabled()
 async def addgame(interaction: discord.Interaction, name: str,
-                  reward_balance: int = 0, reward_exp: int = 0,
+                  reward_balance: int = 0, reward_xp: int = 0,
                   reward_tickets: int = 0, reward_gamble_tokens: int = 0,
                   reward_vip_keys: int = 0, reward_item: str = None,
                   reward_item_qty: int = 1, reward_role: discord.Role = None,
@@ -1941,10 +1941,10 @@ async def addgame(interaction: discord.Interaction, name: str,
         async with get_db() as db:
             try:
                 await db.execute(
-                    "INSERT INTO games(guild_id,game_name,reward_balance,reward_exp,reward_tickets,"
+                    "INSERT INTO games(guild_id,game_name,reward_balance,reward_xp,reward_tickets,"
                     "reward_gamble_tokens,reward_vip_keys,reward_item,reward_item_qty,reward_role_id,chance,answer_time) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (interaction.guild.id, name, reward_balance, reward_exp, reward_tickets,
+                    (interaction.guild.id, name, reward_balance, reward_xp, reward_tickets,
                      reward_gamble_tokens, reward_vip_keys, reward_item, reward_item_qty,
                      reward_role.id if reward_role else 0, chance, answer_time))
                 await db.commit()
@@ -1952,7 +1952,7 @@ async def addgame(interaction: discord.Interaction, name: str,
                 await interaction.response.send_message(f"❌ Game **{name}** already exists.", ephemeral=True); return
     parts = []
     if reward_balance > 0:        parts.append(f"💰 {reward_balance:,}")
-    if reward_exp > 0:            parts.append(f"⭐ {reward_exp:,} EXP")
+    if reward_xp > 0:            parts.append(f"⭐ {reward_xp:,} xp")
     if reward_tickets > 0:        parts.append(f"🎟 {reward_tickets}")
     if reward_gamble_tokens > 0:  parts.append(f"🎲 {reward_gamble_tokens}")
     if reward_vip_keys > 0:       parts.append(f"🔑 {reward_vip_keys}")
@@ -1964,10 +1964,10 @@ async def addgame(interaction: discord.Interaction, name: str,
         f"Use `/addgameanswer` or `/addgamepreset` to add answers.")
 
 @bot.command(name="addgame")
-async def pfx_addgame(ctx, name: str, reward_balance: int = 0, reward_exp: int = 0,
+async def pfx_addgame(ctx, name: str, reward_balance: int = 0, reward_xp: int = 0,
                        chance: float = 1.0, answer_time: int = 30):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    await addgame._callback(FakeInteraction(ctx), name, reward_balance, reward_exp,
+    await addgame._callback(FakeInteraction(ctx), name, reward_balance, reward_xp,
                             0, 0, 0, None, 1, None, chance, answer_time)
 
 @bot.tree.command(name="addgamepreset", description="Bulk-add a preset of answers (and hints) to a game")
@@ -2114,7 +2114,7 @@ async def guild_game_loop(guild_id: int):
 
         async with get_db() as db:
             async with db.execute(
-                "SELECT game_name,reward_balance,reward_exp,reward_tickets,reward_gamble_tokens,"
+                "SELECT game_name,reward_balance,reward_xp,reward_tickets,reward_gamble_tokens,"
                 "reward_vip_keys,reward_item,reward_item_qty,reward_role_id,chance,answer_time "
                 "FROM games WHERE guild_id=? AND enabled=1", (guild_id,)) as cur:
                 game_rows = await cur.fetchall()
@@ -2128,7 +2128,7 @@ async def guild_game_loop(guild_id: int):
                     answers = await cur.fetchall()
             if answers:
                 eligible.append({
-                    "name": gname, "reward_balance": rb or 0, "reward_exp": re or 0,
+                    "name": gname, "reward_balance": rb or 0, "reward_xp": re or 0,
                     "reward_tickets": rt or 0, "reward_gamble_tokens": rgt or 0,
                     "reward_vip_keys": rvk or 0, "reward_item": ri,
                     "reward_item_qty": riq or 1, "reward_role_id": rrole or 0,
@@ -2144,7 +2144,7 @@ async def guild_game_loop(guild_id: int):
         guild_obj = bot.get_guild(guild_id)
         reward_parts = []
         if game["reward_balance"] > 0:       reward_parts.append(f"💰 {game['reward_balance']:,} coins")
-        if game["reward_exp"] > 0:           reward_parts.append(f"⭐ {game['reward_exp']:,} EXP")
+        if game["reward_xp"] > 0:           reward_parts.append(f"⭐ {game['reward_xp']:,} xp")
         if game["reward_tickets"] > 0:       reward_parts.append(f"🎟 {game['reward_tickets']} ticket(s)")
         if game["reward_gamble_tokens"] > 0: reward_parts.append(f"🎲 {game['reward_gamble_tokens']} token(s)")
         if game["reward_vip_keys"] > 0:      reward_parts.append(f"🔑 {game['reward_vip_keys']} key(s)")
@@ -2210,8 +2210,8 @@ async def guild_game_loop(guild_id: int):
                 continue
             if game["reward_balance"] > 0:
                 await add_balance(guild_id, winner.id, game["reward_balance"], bot=bot)
-            if game["reward_exp"] > 0:
-                await add_exp(guild_id, winner.id, game["reward_exp"])
+            if game["reward_xp"] > 0:
+                await add_xp(guild_id, winner.id, game["reward_xp"])
             if game["reward_tickets"] > 0:
                 await add_tickets(guild_id, winner.id, game["reward_tickets"])
             if game["reward_gamble_tokens"] > 0:
