@@ -151,7 +151,9 @@ async def giveaway(interaction: discord.Interaction, prize: str, seconds: int, w
     if not await is_allowed_to_giveaway(interaction):
         await interaction.response.send_message("❌ No permission.", ephemeral=True); return
     if seconds <= 0:
-        await interaction.response.send_message("❌ Duration must be > 0 seconds.", ephemeral=True); return
+        await interaction.response.send_message("❌ Duration must be more 0 seconds.", ephemeral=True); return
+    if seconds > 30:
+        await interaction.response.send_message("❌ Duration must be less than 30 seconds.", ephemeral=True); return
     if reward_role and reward_role >= interaction.user.top_role:
         await interaction.response.send_message(
             f"❌ You can only give away roles below your highest role ({interaction.user.top_role.mention}).", ephemeral=True); return
