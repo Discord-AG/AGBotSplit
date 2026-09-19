@@ -2233,7 +2233,7 @@ async def guild_game_loop(guild_id: int):
             if reward_parts:
                 result_embed.add_field(name="Reward given", value=" + ".join(reward_parts), inline=False)
         else:
-            result_embed = discord.Embed(title="⏰ Time's Up, No winner, It was **{correct_ans}**.", color=discord.Color.red(),
+            result_embed = discord.Embed(title="⏰ Time's Up, No winner, It was **{correct_ans}**.", color=discord.Color.red()),
 
         await channel.send(embed=result_embed)
         await asyncio.sleep(interval_seconds)
