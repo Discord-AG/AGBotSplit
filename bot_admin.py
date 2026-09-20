@@ -27,6 +27,7 @@ from common import (
     get_invite_config, get_invite_stats, get_invite_leaderboard, get_invite_rank,
     get_inviter_of, get_invite_chest_earnings,
     get_bank_config, get_bank_balance, add_bank_balance,
+    invalidate_invite_on_leave, archive_invite_season,
 )
 
 TOKEN = os.getenv("TOKEN_ADMIN")
@@ -3009,17 +3010,39 @@ async def bank_interest_loop():
 # INVITE TRACKING
 # ═══════════════════════════════════════════════════════
 
+# {guild_id: {code: uses}} — snapshot used to work out which invite was used
 _invite_cache: dict[int, dict[str, int]] = {}
 
 
-async def _refresh_invite_cache(guild: discord.Guild):
+async def _refresh_invite_cache(guild: discord.Guild, sync_db: bool = True):
+    """Refresh the uses-snapshot AND record every invite that exists, so
+    manually-created links (not just panel ones) are tracked and attributed."""
     try:
         invites = await guild.invites()
-        _invite_cache[guild.id] = {inv.code: (inv.uses or 0) for inv in invites}
     except discord.Forbidden:
         print(f"[Invites] Missing Manage Server permission in {guild.name}")
+        return
     except Exception as e:
         print(f"[Invites] cache refresh failed for {guild.name}: {e}")
+        return
+
+    _invite_cache[guild.id] = {inv.code: (inv.uses or 0) for inv in invites}
+
+    if not sync_db:
+        return
+    now = int(datetime.now(UTC).timestamp())
+    async with db_lock:
+        async with get_db() as db:
+            for inv in invites:
+                if not inv.inviter or inv.inviter.bot:
+                    continue
+                await db.execute(
+                    "INSERT INTO invite_codes(guild_id,code,inviter_id,uses,created_at) "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(guild_id,code) DO UPDATE SET "
+                    "inviter_id=excluded.inviter_id, uses=excluded.uses",
+                    (guild.id, inv.code, inv.inviter.id, inv.uses or 0,
+                     int(inv.created_at.timestamp()) if inv.created_at else now))
+            await db.commit()
 
 
 async def _find_used_invite(guild: discord.Guild):
@@ -3115,13 +3138,27 @@ async def _record_invite_join(member: discord.Member):
 
 
 async def _mark_invite_left(member: discord.Member):
-    async with db_lock:
-        async with get_db() as db:
-            await db.execute(
-                "UPDATE invite_uses SET left_server=1 WHERE guild_id=? AND invited_id=?",
-                (member.guild.id, member.id))
-            await db.commit()
+    """A member leaving revokes their inviter's credit for the current day."""
+    gid = member.guild.id
+    revoked = await invalidate_invite_on_leave(gid, member.id)
+    if not revoked:
+        return
 
+    inviter_id = await get_inviter_of(gid, member.id)
+    _pc, _pm, log_ch_id, _age, _cut, _re = await get_invite_config(gid)
+    if log_ch_id:
+        ch = bot.get_channel(log_ch_id)
+        if ch:
+            embed = discord.Embed(
+                title="📤 Invited Member Left",
+                description=(f"{member.mention} (`{member.id}`) left the server.\n"
+                             f"Their invite no longer counts toward "
+                             f"<@{inviter_id}>'s total." if inviter_id else
+                             f"{member.mention} left the server."),
+                color=discord.Color.orange())
+            embed.set_footer(text="Use /addinvite <record_id> to restore the credit")
+            try: await ch.send(embed=embed)
+            except Exception: pass
 
 # ── Invite panel ─────────────────────────────────────────────────────────────
 
@@ -3615,19 +3652,15 @@ async def invite_reward_loop():
         for guild in bot.guilds:
             try:
                 _pc, _pm, log_ch, _age, _cut, rewards_enabled = await get_invite_config(guild.id)
-                if not rewards_enabled:
-                    continue
                 async with get_db() as db:
                     async with db.execute(
                         "SELECT max_rank, reward FROM invite_reward_tiers "
                         "WHERE guild_id=? ORDER BY max_rank ASC", (guild.id,)) as cur:
                         tiers = await cur.fetchall()
-                if not tiers:
-                    continue
 
                 lb = await get_invite_leaderboard(guild.id)
                 paid = skipped = 0; total = 0
-                for i, (uid, _count) in enumerate(lb):
+                for i, (uid, _count) in enumerate(lb if (rewards_enabled and tiers) else []):
                     rank = i + 1
                     reward = next((r for mr, r in tiers if rank <= mr), None)
                     if not reward:
@@ -3648,11 +3681,25 @@ async def invite_reward_loop():
                             await db.commit()
                     paid += 1; total += reward
 
-                if paid or skipped:
+                async with db_lock:
+                    async with get_db() as db:
+                        for i, (uid, count) in enumerate(lb):
+                            rank = i + 1
+                            reward = next((r for mr, r in tiers if rank <= mr), 0)
+                            await db.execute(
+                                "INSERT INTO invite_season_log"
+                                "(guild_id,date,user_id,rank,invites,reward) VALUES(?,?,?,?,?,?)",
+                                (guild.id, today, uid, rank, count, reward or 0))
+                        await db.commit()
+
+                archived = await archive_invite_season(guild.id)
+
+                if paid or skipped or archived:
                     await log_event(guild.id, "balance", _log_embed(
                         "🎁 Daily Invite Rewards", discord.Color.gold(),
                         Paid=str(paid), Total=f"{total:,} coins",
-                        Skipped_Blacklisted=str(skipped)))
+                        Skipped_Blacklisted=str(skipped),
+                        Leaderboard_Reset=f"{archived} record(s) archived"))
                     if log_ch:
                         ch = bot.get_channel(log_ch)
                         if ch:
@@ -3661,7 +3708,10 @@ async def invite_reward_loop():
                                     title="🎁 Daily Invite Rewards Paid",
                                     description=f"**{paid}** inviter(s) paid a total of "
                                                 f"**{total:,}** coins."
-                                                + (f"\n{skipped} skipped (blacklisted)." if skipped else ""),
+                                                + (f"\n{skipped} skipped (blacklisted)." if skipped else "")
+                                                + f"\n\n🔄 The invite leaderboard has been **reset** "
+                                                  f"for the new day ({archived} record(s) archived). "
+                                                  f"Past records remain visible in `/invitelog`.",
                                     color=discord.Color.gold()))
                             except Exception: pass
             except Exception as e:
@@ -3876,6 +3926,97 @@ async def pfx_setadminpanel2(ctx, channel: discord.TextChannel):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
     await setadminpanel2._callback(FakeInteraction(ctx), channel)
 
+# ═══════════════════════════════════════════════════════
+# INVITE — periodic sync, manual reset, season history
+# ═══════════════════════════════════════════════════════
+
+async def invite_sync_loop():
+    """Re-scan every guild's invite list every 5 minutes.
+
+    Catches invites created while the bot was offline or whose
+    on_invite_create event was missed, so manually-made links are
+    always attributed to the right person."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(300)
+        for guild in bot.guilds:
+            try:
+                await _refresh_invite_cache(guild, sync_db=True)
+            except Exception as e:
+                print(f"[InviteSync] {guild.name}: {e}")
+
+
+@bot.tree.command(name="resetinvites",
+                  description="Admin: manually reset the invite leaderboard now")
+@app_commands.describe(
+    confirm="Set to True to confirm — this clears today's leaderboard without paying rewards")
+@command_enabled()
+async def resetinvites(interaction: discord.Interaction, confirm: bool = False):
+    if not await is_allowed_to_giveaway(interaction):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
+    if not confirm:
+        lb = await get_invite_leaderboard(interaction.guild.id)
+        await interaction.response.send_message(
+            f"⚠️ This will clear the current invite leaderboard (**{len(lb)}** inviter(s)) "
+            f"**without** paying any rewards.\n"
+            f"Records stay visible in `/invitelog`.\n\n"
+            f"Re-run with `confirm: True` to proceed.", ephemeral=True); return
+    archived = await archive_invite_season(interaction.guild.id)
+    await interaction.response.send_message(
+        f"🔄 Invite leaderboard reset — **{archived}** record(s) archived.\n"
+        f"They remain visible in `/invitelog` and in all-time stats.")
+    await log_event(interaction.guild.id, "admin", _log_embed(
+        "🔄 Invite Leaderboard Reset (Manual)", discord.Color.orange(),
+        Admin=interaction.user.mention, Archived=str(archived)))
+
+
+@bot.command(name="resetinvites")
+async def pfx_resetinvites(ctx, confirm: str = "no"):
+    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
+    val = confirm.strip().lower() in ("true", "yes", "y", "confirm", "1")
+    await resetinvites._callback(FakeInteraction(ctx), val)
+
+
+@bot.tree.command(name="invitehistory",
+                  description="View past daily invite leaderboard standings")
+@app_commands.describe(date="Date as YYYY-MM-DD (blank = most recent day)")
+@command_enabled()
+async def invitehistory(interaction: discord.Interaction, date: str = None):
+    await interaction.response.defer()
+    gid = interaction.guild.id
+    async with get_db() as db:
+        if not date:
+            async with db.execute(
+                "SELECT date FROM invite_season_log WHERE guild_id=? "
+                "ORDER BY date DESC LIMIT 1", (gid,)) as cur:
+                row = await cur.fetchone()
+            if not row:
+                await interaction.followup.send("❌ No invite history recorded yet."); return
+            date = row[0]
+        async with db.execute(
+            "SELECT user_id, rank, invites, reward FROM invite_season_log "
+            "WHERE guild_id=? AND date=? ORDER BY rank ASC", (gid, date)) as cur:
+            rows = await cur.fetchall()
+    if not rows:
+        await interaction.followup.send(f"❌ No records for **{date}**."); return
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for uid, rank, invites, reward in rows:
+        m = interaction.guild.get_member(uid)
+        name = m.display_name if m else "*[Left Server]*"
+        prefix = medals[rank-1] if rank <= 3 else f"**#{rank}**"
+        reward_str = f" · 🎁 {reward:,}" if reward else ""
+        lines.append(f"{prefix} {name} — {invites:,} invites{reward_str}")
+    pages = paginate_lines(lines, f"📜 Invite Standings — {date}",
+                           discord.Color.gold(), per_page=10)
+    view = EmbedPaginator(pages, interaction.user.id) if len(pages) > 1 else None
+    await interaction.followup.send(embed=pages[0], view=view)
+
+
+@bot.command(name="invitehistory")
+async def pfx_invitehistory(ctx, date: str = None):
+    await invitehistory._callback(FakeInteraction(ctx), date)
 
 if __name__ == "__main__":
     bot.run(TOKEN)
