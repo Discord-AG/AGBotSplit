@@ -321,6 +321,19 @@ async def setup_database():
             await db.execute("""CREATE TABLE IF NOT EXISTS bank_interest_log(
                 guild_id INTEGER, user_id INTEGER, date TEXT, amount INTEGER,
                 PRIMARY KEY(guild_id, user_id, date))""")
+
+            try:
+                await db.execute(
+                    "ALTER TABLE invite_uses ADD COLUMN archived INTEGER DEFAULT 0")
+            except aiosqlite.OperationalError:
+                pass
+            await db.execute("""CREATE INDEX IF NOT EXISTS idx_invite_uses_season
+                ON invite_uses(guild_id, inviter_id, valid, archived)""")
+            await db.execute("""CREATE TABLE IF NOT EXISTS invite_season_log(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER, date TEXT, user_id INTEGER,
+                rank INTEGER, invites INTEGER, reward INTEGER)""")
+
  
             await db.commit()
  
@@ -1378,26 +1391,79 @@ async def get_invite_config(guild_id: int):
     return (0, 0, 0, 7, 40.0, 1)
 
 
-async def get_invite_stats(guild_id: int, user_id: int) -> tuple[int, int]:
-    """Returns (valid_invites, invalid_invites) for one inviter."""
+async def get_invite_stats(guild_id: int, user_id: int,
+                           all_time: bool = False) -> tuple[int, int]:
+    """(valid, invalid) for one inviter.
+    all_time=False → today's counts only (archived rows excluded)
+    all_time=True  → every record ever, including archived days"""
+    where = "guild_id=? AND inviter_id=?"
+    params = [guild_id, user_id]
+    if not all_time:
+        where += " AND archived=0"
     async with get_db() as db:
         async with db.execute(
-            "SELECT SUM(CASE WHEN valid=1 THEN 1 ELSE 0 END), "
-            "       SUM(CASE WHEN valid=0 THEN 1 ELSE 0 END) "
-            "FROM invite_uses WHERE guild_id=? AND inviter_id=?",
-            (guild_id, user_id)) as cur:
+            f"SELECT SUM(CASE WHEN valid=1 THEN 1 ELSE 0 END), "
+            f"       SUM(CASE WHEN valid=0 THEN 1 ELSE 0 END) "
+            f"FROM invite_uses WHERE {where}", params) as cur:
             row = await cur.fetchone()
     return (int(row[0] or 0), int(row[1] or 0))
-
-
-async def get_invite_leaderboard(guild_id: int) -> list[tuple[int, int]]:
-    """[(inviter_id, valid_invite_count), ...] sorted descending."""
+ 
+ 
+async def get_invite_leaderboard(guild_id: int,
+                                 all_time: bool = False) -> list[tuple[int, int]]:
+    """[(inviter_id, valid_invite_count), ...] sorted descending.
+    Defaults to TODAY only — invites reset daily right after rewards pay out."""
+    where = "guild_id=? AND valid=1"
+    if not all_time:
+        where += " AND archived=0"
     async with get_db() as db:
         async with db.execute(
-            "SELECT inviter_id, COUNT(*) FROM invite_uses "
-            "WHERE guild_id=? AND valid=1 GROUP BY inviter_id "
-            "ORDER BY COUNT(*) DESC", (guild_id,)) as cur:
+            f"SELECT inviter_id, COUNT(*) FROM invite_uses WHERE {where} "
+            f"GROUP BY inviter_id ORDER BY COUNT(*) DESC", (guild_id,)) as cur:
             return [(uid, int(c)) for uid, c in await cur.fetchall()]
+ 
+ 
+async def get_invite_rank(guild_id: int, user_id: int,
+                          all_time: bool = False) -> int | None:
+    lb = await get_invite_leaderboard(guild_id, all_time=all_time)
+    for i, (uid, _) in enumerate(lb):
+        if uid == user_id:
+            return i + 1
+    return None
+ 
+ 
+async def invalidate_invite_on_leave(guild_id: int, user_id: int) -> int:
+    """Called when a member leaves: their inviter loses the credit.
+    Only touches the CURRENT (non-archived) season so past payouts stand.
+    Returns how many records were invalidated."""
+    async with db_lock:
+        async with get_db() as db:
+            cur = await db.execute(
+                "UPDATE invite_uses SET valid=0, left_server=1, "
+                "reason='Invited member left the server' "
+                "WHERE guild_id=? AND invited_id=? AND archived=0 AND valid=1",
+                (guild_id, user_id))
+            changed = cur.rowcount or 0
+            # Still flag archived rows as 'left' for the log, without changing validity
+            await db.execute(
+                "UPDATE invite_uses SET left_server=1 "
+                "WHERE guild_id=? AND invited_id=?", (guild_id, user_id))
+            await db.commit()
+    return changed
+ 
+ 
+async def archive_invite_season(guild_id: int) -> int:
+    """Wipe the daily leaderboard by archiving every current record.
+    Records stay queryable in /invitelog and via all_time=True.
+    Returns how many rows were archived."""
+    async with db_lock:
+        async with get_db() as db:
+            cur = await db.execute(
+                "UPDATE invite_uses SET archived=1 WHERE guild_id=? AND archived=0",
+                (guild_id,))
+            archived = cur.rowcount or 0
+            await db.commit()
+    return archived
 
 
 async def get_invite_rank(guild_id: int, user_id: int) -> int | None:
