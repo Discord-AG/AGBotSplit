@@ -2082,7 +2082,7 @@ async def hostleaderboard(interaction: discord.Interaction, board: str = "weekly
 
     if not data:
         scope = "this week" if weekly else "all time"
-        await interaction.followup.send(f"❌ Nobody has hosted a giveaway {scope} yet."); return
+        await interaction.followup.send(f"❌ Nobody has hosted a giveaway {scope} yet.", ephemeral=True); return
 
     cfg       = await get_host_role_config(gid)
     top_count = cfg[1] if cfg else 0
@@ -2114,7 +2114,7 @@ async def hostleaderboard(interaction: discord.Interaction, board: str = "weekly
         embed.set_footer(text=foot)
 
     view = EmbedPaginator(pages, interaction.user.id) if total_pages > 1 else None
-    await interaction.followup.send(embed=pages[0], view=view)
+    await interaction.followup.send(embed=pages[0], view=view, ephemeral=True)
 
 
 @bot.command(name="hostleaderboard")
@@ -2367,7 +2367,7 @@ async def exchange_coins_to_xp(interaction: discord.Interaction, amount: str):
     embed = discord.Embed(title="💱 Exchange Complete", color=discord.Color.green(),
         description=f"💰 **-{parsed:,}** coins\n⭐ **+{xp_gained:,}** xp")
     embed.set_footer(text=f"Rate: 1 coin = {c2e:g} xp")
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
     await log_event(gid, "balance", _log_embed(
         "💱 Coins → xp", discord.Color.teal(),
         User=interaction.user.mention, Spent=f"{parsed:,} coins", Received=f"{xp_gained:,} xp"))
@@ -2403,7 +2403,7 @@ async def exchange_xp_to_coins(interaction: discord.Interaction, amount: str):
     embed = discord.Embed(title="💱 Exchange Complete", color=discord.Color.green(),
         description=f"⭐ **-{parsed:,}** xp\n💰 **+{coins_gained:,}** coins")
     embed.set_footer(text=f"Rate: 1 xp = {e2c:g} coins")
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
     await log_event(gid, "balance", _log_embed(
         "💱 xp → Coins", discord.Color.teal(),
         User=interaction.user.mention, Spent=f"{parsed:,} xp", Received=f"{coins_gained:,} coins"))
@@ -2863,7 +2863,7 @@ async def bank_balance(interaction: discord.Interaction, user: discord.Member = 
         embed.set_footer(text="⚠️ The bank is currently disabled — no interest is being paid.")
     elif await is_blacklisted(gid, user.id):
         embed.set_footer(text="🚫 Blacklisted — no interest will be paid.")
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bank_group.command(name="deposit", description="Move coins from your wallet into the bank")
@@ -2904,7 +2904,7 @@ async def bank_deposit(interaction: discord.Interaction, amount: str):
     new_bank = await get_bank_balance(gid, uid)
     await interaction.response.send_message(
         f"🏦 Deposited **{parsed:,}** coins.\nBank: **{new_bank:,}** · "
-        f"Earning **{rate:g}%** daily (+{int(new_bank * rate / 100):,}/day)")
+        f"Earning **{rate:g}%** daily (+{int(new_bank * rate / 100):,}/day)", ephemeral=True)
 
 
 @bank_group.command(name="withdraw", description="Move coins from the bank back to your wallet")
@@ -2931,7 +2931,7 @@ async def bank_withdraw(interaction: discord.Interaction, amount: str):
     # skip_blacklist: this is their own money coming back, not a new gain
     await add_balance(gid, uid, parsed, bot=bot, skip_blacklist=True)
     await interaction.response.send_message(
-        f"🏦 Withdrew **{parsed:,}** coins.\nBank: **{await get_bank_balance(gid, uid):,}**")
+        f"🏦 Withdrew **{parsed:,}** coins.\nBank: **{await get_bank_balance(gid, uid):,}**", ephemeral=True)
 
 
 @bot.command(name="bank")
