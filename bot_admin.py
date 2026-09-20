@@ -138,12 +138,6 @@ async def createcode(interaction: discord.Interaction, code: str, prize_json: st
     await log_event(interaction.guild.id, "admin", _log_embed("🎟 Code Created", discord.Color.green(),
         Admin=interaction.user.mention, Code=code, Uses=uses_str))
 
-@bot.command(name="createcode")
-async def pfx_createcode(ctx, code: str, prize_json: str, uses: int = 1,
-                          min_level: int = 0, min_balance: int = 0):
-    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    await createcode._callback(FakeInteraction(ctx), code, prize_json, uses, min_level, min_balance, None)
-
 
 @bot.command(name="deletecode")
 async def cmd_deletecode(ctx, code: str):
@@ -270,9 +264,6 @@ async def redeem(interaction: discord.Interaction, code: str):
     await interaction.followup.send(
         f"✅ Global code **{code}** redeemed!\nReward: {_prize_summary(prize, interaction.guild)}", ephemeral=True)
 
-@bot.command(name="redeem")
-async def pfx_redeem(ctx, code: str):
-    await redeem._callback(FakeInteraction(ctx), code)
 
 
 # ═══════════════════════════════════════════════════════
@@ -2117,12 +2108,6 @@ async def hostleaderboard(interaction: discord.Interaction, board: str = "weekly
     await interaction.followup.send(embed=pages[0], view=view, ephemeral=True)
 
 
-@bot.command(name="hostleaderboard")
-async def pfx_hostleaderboard(ctx, board: str = "weekly"):
-    if board not in ("weekly", "alltime"):
-        await ctx.send("❌ Use `weekly` or `alltime`."); return
-    await hostleaderboard._callback(FakeInteraction(ctx), board)
-
 
 @bot.tree.command(name="sethostrole",
                   description="Set the role given to top hosts, and how many bonus giveaway entries it grants")
@@ -2335,7 +2320,7 @@ async def exchange_rates(interaction: discord.Interaction):
     else:
         embed.add_field(name="🎁 Special Prizes", value="*None configured yet*", inline=False)
     embed.set_footer(text="/exchange coins-to-xp · /exchange xp-to-coins · /exchange prize")
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @exchange_group.command(name="coins-to-xp", description="Exchange your coins for xp")
@@ -2689,29 +2674,6 @@ async def pfx_toggleexchange(ctx, enabled: str):
     await toggleexchange._callback(FakeInteraction(ctx), val)
 
 
-@bot.command(name="exchange")
-async def pfx_exchange(ctx, action: str = None, *, arg: str = None):
-    """!exchange rates | !exchange coinstoxp <amt> | !exchange xptocoins <amt> | !exchange prize <name>"""
-    p = common._BOT_PREFIX
-    if action is None:
-        await ctx.send(f"Use `{p}exchange rates`, `{p}exchange coinstoxp <amount>`, "
-                       f"`{p}exchange xptocoins <amount>`, or `{p}exchange prize <name>`."); return
-    action = action.strip().lower().replace("-", "").replace("_", "")
-    fake = FakeInteraction(ctx)
-    if action == "rates":
-        await exchange_rates._callback(fake)
-    elif action in ("coinstoxp", "ctoe"):
-        if not arg: await ctx.send("❌ Specify an amount."); return
-        await exchange_coins_to_xp._callback(fake, arg)
-    elif action in ("xptocoins", "etoc"):
-        if not arg: await ctx.send("❌ Specify an amount."); return
-        await exchange_xp_to_coins._callback(fake, arg)
-    elif action == "prize":
-        if not arg: await ctx.send("❌ Specify a prize name or ID."); return
-        await exchange_prize._callback(fake, arg)
-    else:
-        await ctx.send(f"❌ Unknown action. Use `rates`, `coinstoxp`, `xptocoins`, or `prize`.")
-
 
 # ═══════════════════════════════════════════════════════
 # ECONOMY BLACKLIST
@@ -2933,23 +2895,6 @@ async def bank_withdraw(interaction: discord.Interaction, amount: str):
     await interaction.response.send_message(
         f"🏦 Withdrew **{parsed:,}** coins.\nBank: **{await get_bank_balance(gid, uid):,}**", ephemeral=True)
 
-
-@bot.command(name="bank")
-async def pfx_bank(ctx, action: str = "balance", *, arg: str = None):
-    """!bank balance | !bank deposit <amt> | !bank withdraw <amt>"""
-    fake = FakeInteraction(ctx)
-    action = action.strip().lower()
-    if action in ("balance", "bal", "info"):
-        await bank_balance._callback(fake, None)
-    elif action in ("deposit", "dep", "d"):
-        if not arg: await ctx.send("❌ Specify an amount."); return
-        await bank_deposit._callback(fake, arg)
-    elif action in ("withdraw", "with", "w"):
-        if not arg: await ctx.send("❌ Specify an amount."); return
-        await bank_withdraw._callback(fake, arg)
-    else:
-        p = common._BOT_PREFIX
-        await ctx.send(f"Use `{p}bank balance`, `{p}bank deposit <amount>`, or `{p}bank withdraw <amount>`.")
 
 
 @bot.tree.command(name="setbankinterest", description="Admin: set the daily bank interest rate")
