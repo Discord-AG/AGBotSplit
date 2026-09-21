@@ -881,14 +881,15 @@ async def rankspanelembed(interaction: discord.Interaction):
 
     embed=discord.Embed(
         title="RANKS",
-        description="Ranks are updated through your balance.",
+        description="""Ranks are updated through your balance.
+        
+        <@&1539341777268375633> 🏵️ - 250M+ 
+<@&1539341855941206036> 🔮 - 1.5B+
+<@&1539341829017702531> 🐉 - 5B+
+<@&1539341884248555531> 👾 - 20B+""",
         color=discord.Color.red()
     )
-    embed.add_field(name="Novice 🌱", value="250M+", inline=True)
-    embed.add_field(name="Celestial 🏵️", value="1.5B+", inline=True)
-    embed.add_field(name="Elite 🐉", value="5B+", inline=True)
-    embed.add_field(name="Royal 👾", value="20B+", inline=True)
-
+   
     await interaction.channel.send(embed=embed)
 
 
