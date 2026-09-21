@@ -180,9 +180,9 @@ async def giveaway(interaction: discord.Interaction, prize: str, seconds: int, w
                      f"**Winners:** {winners}\n**Ends:** <t:{int(end_time.timestamp())}:R>"),
         color=TEMPLATES.get(template, discord.Color.gold()))
     if required_role: embed.add_field(name="Required Role", value=required_role.mention, inline=False)
-    embed2 = discord.Embed()
+    embed2 = discord.Embed(
+        color=discord.Color.from_str("#3e1cff"))
     embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&"),
-        color=discord.Color.from_str("#3e1cff")
 
     message = await target_channel.send(embeds=[embed2, embed])
     await message.add_reaction("🎉")
@@ -289,9 +289,9 @@ Activity rank improves your chances to win giveaways"""
         color=discord.Color.purple())
     embed.set_footer(text=f"Hosted by {interaction.user.display_name} · NOVA")
 
-    embed2 = discord.Embed()
+    embed2 = discord.Embed(
+        color=discord.Color.from_str("#3e1cff"))
     embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&"),
-        color=discord.Color.from_str("#3e1cff")
 
     message = await target_channel.send(embeds=[embed2, embed])
     await message.add_reaction("🎉")
@@ -519,9 +519,9 @@ async def auto_giveaway_loop(guild_id: int):
                          f"**Winners:** {winners}\n**Ends:** <t:{int(end_time.timestamp())}:R>"),
             color=discord.Color.gold())
         
-        embed2 = discord.Embed()
+        embed2 = discord.Embed(
+            color=discord.Color.from_str("#3e1cff"))
         embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&"),
-            color=discord.Color.from_str("#3e1cff")
         
         msg = await channel.send(embeds=[embed2, embed])
         await msg.add_reaction("🎉")
