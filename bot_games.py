@@ -22,7 +22,7 @@ from common import (
     is_blacklisted,
 )
 
-_HOST_CHANNEL_ID = 1527412254746742784
+_HOST_CHANNEL_ID = 1549076189199732846
 _HOST_DURATION   = 30   # seconds
 _HOST_MIN_WINNERS = 3
 _HOST_MAX_WINNERS = 10
@@ -180,8 +180,10 @@ async def giveaway(interaction: discord.Interaction, prize: str, seconds: int, w
                      f"**Winners:** {winners}\n**Ends:** <t:{int(end_time.timestamp())}:R>"),
         color=TEMPLATES.get(template, discord.Color.gold()))
     if required_role: embed.add_field(name="Required Role", value=required_role.mention, inline=False)
+    embed2 = discord.Embed()
+    embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&")
 
-    message = await target_channel.send(embed=embed)
+    message = await target_channel.send(embeds=[embed, embed2])
     await message.add_reaction("🎉")
 
     prize_meta = json.dumps({
@@ -286,7 +288,10 @@ async def host(interaction: discord.Interaction,
         color=discord.Color.purple())
     embed.set_footer(text=f"Hosted by {interaction.user.display_name} · NOVA")
 
-    message = await target_channel.send(embed=embed)
+    embed2 = discord.Embed()
+    embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&")
+
+    message = await target_channel.send(embeds=[embed, embed2])
     await message.add_reaction("🎉")
 
     prize_meta = json.dumps({
@@ -511,7 +516,11 @@ async def auto_giveaway_loop(guild_id: int):
             description=(f"React 🎉 to enter\n\n**Prize:** {prize}\n**Reward:** {reward_summary}\n"
                          f"**Winners:** {winners}\n**Ends:** <t:{int(end_time.timestamp())}:R>"),
             color=discord.Color.gold())
-        msg = await channel.send(embed=embed)
+        
+        embed2 = discord.Embed()
+        embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&")
+        
+        msg = await channel.send(embeds=[embed, embed2])
         await msg.add_reaction("🎉")
 
         if await _is_auto_enterable(guild_id, rb):
@@ -663,13 +672,13 @@ async def mywinnings(interaction: discord.Interaction, user: discord.Member = No
                 all_rows = await cur.fetchall()
         rows = [r for r in all_rows if r[3] in guild_channel_set]
     except Exception as e:
-        await interaction.followup.send(f"❌ Database error: {e}"); return
+        await interaction.followup.send(f"❌ Database error: {e}", ephemeral=True); return
 
     if not rows:
         embed = discord.Embed(title=f"🏆 {user.display_name}'s Wins",
                               description="No giveaway wins found in this server yet.", color=discord.Color.gold())
         embed.set_thumbnail(url=user.display_avatar.url)
-        await interaction.followup.send(embed=embed); return
+        await interaction.followup.send(embed=embed, ephemeral=True); return
 
     async with get_db() as db:
         async with db.execute(
@@ -721,7 +730,7 @@ async def mywinnings(interaction: discord.Interaction, user: discord.Member = No
         pages.append(embed)
 
     view = WinningsView(pages, interaction.user.id)
-    await interaction.followup.send(embed=pages[0], view=view if len(pages) > 1 else None)
+    await interaction.followup.send(embed=pages[0], view=view if len(pages) > 1 else None, ephemeral=True)
 
 @bot.command(name="mywinnings")
 async def pfx_mywinnings(ctx, user: discord.Member = None):
