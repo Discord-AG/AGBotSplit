@@ -126,7 +126,32 @@ async def pfx_removechestprize(ctx, chest_type: str, prize_id: int):
     if chest_type not in ("chest","vipchest"): await ctx.send("❌ Use `chest` or `vipchest`."); return
     await removechestprize._callback(FakeInteraction(ctx), chest_type, prize_id)
 
-
+@bot.tree.command(name="listchestprizes",
+                  description="List all prizes in the xp or VIP chest loot table")
+@app_commands.describe(chest_type="Which chest to list")
+@app_commands.choices(chest_type=_CHEST_TYPE_DESC_CHOICES)
+@command_enabled()
+async def slash_listchestprizes(interaction: discord.Interaction, chest_type: str = "chest"):
+    await interaction.response.defer()
+    prizes  = await get_chest_prizes(interaction.guild.id, chest_type)
+    total_w = sum(p["chance"] for p in prizes)
+    is_custom = any("id" in p for p in prizes)
+    lines = []
+    for p in prizes:
+        pct  = (p["chance"] / total_w * 100) if total_w > 0 else 0
+        desc = []
+        if p["xp"] > 0:     desc.append(f"⭐{p['xp']:,}")
+        if p["balance"] > 0: desc.append(f"💰{p['balance']:,}")
+        if not desc:         desc.append("✨Special")
+        id_str = f"`#{p['id']}` " if "id" in p else ""
+        lines.append(f"{id_str}**{p['name']}** — {' + '.join(desc)} — **{pct:.1f}%** (w:{p['chance']})")
+    title = "📦 xp Chest Prizes" if chest_type == "chest" else "💎 VIP Chest Prizes"
+    pages = paginate_lines(lines, title, discord.Color.purple())
+    if not is_custom:
+        pages[0].set_footer(text=f"Using default prizes — Page 1/{len(pages)}")
+    view = EmbedPaginator(pages, interaction.user.id) if len(pages) > 1 else None
+    await interaction.followup.send(embed=pages[0], view=view)
+    
 @bot.tree.command(name="addrarechestdrop", description="Mark a chest prize as a rare drop")
 @app_commands.describe(chest_type="Which chest", prize="Prize name or numeric ID from /listchestprizes")
 @app_commands.choices(chest_type=_CHEST_CHOICES)
