@@ -151,7 +151,12 @@ async def slash_listchestprizes(interaction: discord.Interaction, chest_type: st
         pages[0].set_footer(text=f"Using default prizes — Page 1/{len(pages)}")
     view = EmbedPaginator(pages, interaction.user.id) if len(pages) > 1 else None
     await interaction.followup.send(embed=pages[0], view=view)
-    
+
+_CHEST_TYPE_DESC_CHOICES = [
+    app_commands.Choice(name="Chest", value="chest"),
+    app_commands.Choice(name="VIP Chest", value="vipchest"),
+]
+
 @bot.tree.command(name="addrarechestdrop", description="Mark a chest prize as a rare drop")
 @app_commands.describe(chest_type="Which chest", prize="Prize name or numeric ID from /listchestprizes")
 @app_commands.choices(chest_type=_CHEST_CHOICES)
