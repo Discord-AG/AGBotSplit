@@ -881,7 +881,7 @@ async def rankspanelembed(interaction: discord.Interaction):
 
     embed=discord.Embed(
         title="🌟 RANKS",
-        description="""Ranks are updated through your balance 🚀.
+        description="""Ranks are updated through your balance 🚀
         
 <@&1539341777268375633> 🏵️ - 250M+ 
 <@&1539341855941206036> 🔮 - 1.5B+
