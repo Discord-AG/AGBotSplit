@@ -181,9 +181,10 @@ async def giveaway(interaction: discord.Interaction, prize: str, seconds: int, w
         color=TEMPLATES.get(template, discord.Color.gold()))
     if required_role: embed.add_field(name="Required Role", value=required_role.mention, inline=False)
     embed2 = discord.Embed()
-    embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&")
+    embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&"),
+        color=TEMPLATES.get(template, discord.Color.blue())
 
-    message = await target_channel.send(embeds=[embed, embed2])
+    message = await target_channel.send(embeds=[embed2, embed])
     await message.add_reaction("🎉")
 
     prize_meta = json.dumps({
@@ -281,17 +282,18 @@ async def host(interaction: discord.Interaction,
             f"**Prize:** {prize}\n"
             f"**Reward:** 💰 {per_winner:,} coins per winner\n"
             f"**Winners:** {winners}\n"
-            f"**Ends:** <t:{int(end_time.timestamp())}:R>\n"
-            f"Go to <#1549077648305692682> to view your balance"
-            f"Activity rank improves your chances to win giveaways"
+            f"**Ends:** <t:{int(end_time.timestamp())}:R>"
+            f"""Go to <#1549077648305692682> to view your balance
+Activity rank improves your chances to win giveaways"""
         ),
         color=discord.Color.purple())
     embed.set_footer(text=f"Hosted by {interaction.user.display_name} · NOVA")
 
     embed2 = discord.Embed()
-    embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&")
+    embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&"),
+        color=TEMPLATES.get(template, discord.Color.blue())
 
-    message = await target_channel.send(embeds=[embed, embed2])
+    message = await target_channel.send(embeds=[embed2, embed])
     await message.add_reaction("🎉")
 
     prize_meta = json.dumps({
@@ -518,9 +520,10 @@ async def auto_giveaway_loop(guild_id: int):
             color=discord.Color.gold())
         
         embed2 = discord.Embed()
-        embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&")
+        embed2.set_image(url="https://cdn.discordapp.com/attachments/1516315365204820080/1551606678041010186/IMG_7703.png?ex=6ab295d3&is=6ab14453&hm=78fb36c3623ecee8e910805b150e4c81f15efe49a8dc35873a46206c7a86a667&"),
+            color=TEMPLATES.get(template, discord.Color.blue())
         
-        msg = await channel.send(embeds=[embed, embed2])
+        msg = await channel.send(embeds=[embed2, embed])
         await msg.add_reaction("🎉")
 
         if await _is_auto_enterable(guild_id, rb):
