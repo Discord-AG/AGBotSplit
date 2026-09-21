@@ -507,7 +507,7 @@ class ChestChannelView(discord.ui.View):
     async def open_xp_1(self, interaction: discord.Interaction, btn):
         await _do_open_xp_chests(interaction, 1)
 
-      @discord.ui.button(label="Open Max", style=discord.ButtonStyle.primary, custom_id="chest_panel:open_xp_max", row=0)
+    @discord.ui.button(label="Open Max", style=discord.ButtonStyle.primary, custom_id="chest_panel:open_xp_max", row=0)
     async def open_xp_max(self, interaction: discord.Interaction, btn):
         await _do_open_xp_chests(interaction, -1)
 
