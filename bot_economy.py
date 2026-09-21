@@ -880,10 +880,10 @@ async def rankspanelembed(interaction: discord.Interaction):
     await interaction.response.send_message("ranks panel is being sent", ephemeral=True)
 
     embed=discord.Embed(
-        title="RANKS",
-        description="""Ranks are updated through your balance.
+        title="🌟 RANKS",
+        description="""Ranks are updated through your balance 🚀.
         
-        <@&1539341777268375633> 🏵️ - 250M+ 
+<@&1539341777268375633> 🏵️ - 250M+ 
 <@&1539341855941206036> 🔮 - 1.5B+
 <@&1539341829017702531> 🐉 - 5B+
 <@&1539341884248555531> 👾 - 20B+""",
