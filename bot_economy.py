@@ -43,12 +43,9 @@ async def balance(interaction: discord.Interaction, user: discord.Member = None)
     bal = await get_balance(interaction.guild.id, user.id)
     embed = discord.Embed(title=f"💰 {user.display_name}'s Balance",
                           description=f"{bal:,} coins", color=discord.Color.green())
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
  
-@bot.command(name="balance")
-async def pfx_balance(ctx, user: discord.Member = None):
-    await balance._callback(FakeInteraction(ctx), user)
- 
+
 @bot.command(name="addbalance")
 async def cmd_addbalance(ctx, user: discord.Member, amount: str):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
@@ -87,11 +84,7 @@ async def level(interaction: discord.Interaction, user: discord.Member = None):
     embed.add_field(name="Activity Rank", value=str(lvl), inline=False)
     embed.add_field(name="Total xp (7d)", value=f"{xp:,}", inline=False)
     embed.add_field(name="Usable xp", value=f"{usable:,}", inline=False)
-    await interaction.response.send_message(embed=embed)
- 
-@bot.command(name="activityrank")
-async def pfx_activityrank(ctx, user: discord.Member = None):
-    await level._callback(FakeInteraction(ctx), user)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
  
 @bot.command(name="addxp")
 async def cmd_addxp(ctx, user: discord.Member, amount: str):
@@ -353,8 +346,6 @@ class LeaderboardView(discord.ui.View):
     app_commands.Choice(name="Total xp", value="total_xp"),
     app_commands.Choice(name="Usable xp", value="current_xp"),
     app_commands.Choice(name="Balance", value="balance"),
-    app_commands.Choice(name="Lifetime Mega Tickets", value="mega_tickets_bought"),
-    app_commands.Choice(name="Current Mega Tickets", value="current_tickets"),
     app_commands.Choice(name="Chests Opened", value="chests_opened"),
     app_commands.Choice(name="Gifted Balance", value="gifted_balance"),
     app_commands.Choice(name="Hosted Balance (given away via /host)", value="hosted_balance"),
@@ -375,11 +366,6 @@ async def leaderboard(interaction: discord.Interaction, category: app_commands.C
                 "WHERE guild_id=? AND timestamp>=? GROUP BY user_id "
                 "HAVING SUM(amount)>0 ORDER BY SUM(amount) DESC", (gid, week_ago)) as cur:
                 all_data = [(uid, int(amt)) for uid, amt in await cur.fetchall()]
-        elif value == "current_tickets":
-            async with db.execute(
-                "SELECT user_id, tickets FROM mega_tickets WHERE guild_id=? AND tickets>0 ORDER BY tickets DESC",
-                (gid,)) as cur:
-                all_data = list(await cur.fetchall())
         elif value == "balance":
             async with db.execute(
                 "SELECT user_id, balance FROM balances WHERE guild_id=? AND balance>0 ORDER BY balance DESC",
@@ -392,7 +378,7 @@ async def leaderboard(interaction: discord.Interaction, category: app_commands.C
                 all_data = list(await cur.fetchall())
  
     if not all_data:
-        await interaction.followup.send("❌ No data found."); return
+        await interaction.followup.send("❌ No data found.", ephemeral=True); return
  
     caller_rank = caller_amt = None
     for rank, (uid, amt) in enumerate(all_data, 1):
@@ -402,7 +388,6 @@ async def leaderboard(interaction: discord.Interaction, category: app_commands.C
  
     title_map = {
         "total_xp": "🏆 Total xp", "current_xp": "⭐ Usable xp", "balance": "💰 Balance",
-        "mega_tickets_bought": "🎟 Lifetime Mega Tickets", "current_tickets": "🎫 Current Mega Tickets",
         "chests_opened": "📦 Chests Opened", "gifted_balance": "💸 Gifted Balance",
         "hosted_balance": "🎁 Hosted Balance Given Away",
     }
@@ -410,18 +395,9 @@ async def leaderboard(interaction: discord.Interaction, category: app_commands.C
     total_pages = max(1, (len(all_data) + _LB_PER_PAGE - 1) // _LB_PER_PAGE)
     page = max(1, min(page, total_pages))
     view = LeaderboardView(all_data, interaction.guild, interaction.user.id, caller_rank, caller_amt, title, page, total_pages)
-    await interaction.followup.send(embed=view.build_embed(page), view=view if total_pages > 1 else None)
- 
-@bot.command(name="leaderboard")
-async def pfx_leaderboard(ctx, category: str = "balance", page: int = 1):
-    _valid = {"total_xp","current_xp","balance","mega_tickets_bought",
-              "current_tickets","chests_opened","gifted_balance","hosted_balance"}
-    if category not in _valid:
-        await ctx.send(f"❌ Valid categories: {', '.join(sorted(_valid))}"); return
-    await leaderboard._callback(FakeInteraction(ctx), _MC(category), page)
- 
- 
-_VALID_STATS = {"total_xp", "gifted_balance", "chests_opened", "mega_tickets_bought", "hosted_balance"}
+    await interaction.followup.send(embed=view.build_embed(page), view=view if total_pages > 1 else None, ephemeral=True)
+
+_VALID_STATS = {"total_xp", "gifted_balance", "chests_opened", "hosted_balance"}
  
 @bot.command(name="addleaderboardstat")
 async def cmd_addleaderboardstat(ctx, user: discord.Member, stat: str, amount: int):
@@ -519,30 +495,6 @@ async def pfx_removebalancerank(ctx, role: discord.Role):
     await removebalancerank._callback(FakeInteraction(ctx), role)
  
  
-@bot.tree.command(name="listbalanceranks", description="List all balance rank thresholds")
-@command_enabled()
-async def listbalanceranks(interaction: discord.Interaction):
-    async with get_db() as db:
-        async with db.execute(
-            "SELECT role_id, threshold FROM balance_ranks WHERE guild_id=? ORDER BY threshold ASC",
-            (interaction.guild.id,)) as cur:
-            rows = await cur.fetchall()
-    if not rows:
-        await interaction.response.send_message("❌ No balance ranks configured."); return
-    embed = discord.Embed(title="📈 Balance Ranks", color=discord.Color.gold())
-    lines = []
-    for rid, threshold in rows:
-        r = interaction.guild.get_role(rid)
-        lines.append(f"**{threshold:,}+** coins → {r.mention if r else f'<deleted role {rid}>'}")
-    embed.description = "\n".join(lines)
-    embed.set_footer(text="A member only ever holds ONE balance rank role — the highest they qualify for.")
-    await interaction.response.send_message(embed=embed)
- 
-@bot.command(name="listbalanceranks")
-async def pfx_listbalanceranks(ctx):
-    await listbalanceranks._callback(FakeInteraction(ctx))
- 
- 
 @bot.tree.command(name="refreshbalanceranks",
                   description="Re-evaluate balance ranks for every member with a balance")
 @command_enabled()
@@ -577,51 +529,6 @@ async def pfx_refreshbalanceranks(ctx):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
     await refreshbalanceranks._callback(FakeInteraction(ctx))
  
- 
-@bot.tree.command(name="checkbalancerank",
-                  description="Diagnose why a user might not have their xpected balance rank")
-@app_commands.describe(user="User to check (defaults to yourself)")
-@command_enabled()
-async def checkbalancerank(interaction: discord.Interaction, user: discord.Member = None):
-    user = user or interaction.user
-    gid = interaction.guild.id
-    bal = await get_balance(gid, user.id)
-    async with get_db() as db:
-        async with db.execute(
-            "SELECT role_id, threshold FROM balance_ranks WHERE guild_id=? ORDER BY threshold DESC", (gid,)) as cur:
-            ranks = await cur.fetchall()
-    if not ranks:
-        await interaction.response.send_message("❌ No balance ranks configured on this server."); return
- 
-    target_role_id = None
-    for rid, threshold in ranks:
-        if bal >= threshold:
-            target_role_id = rid; break
-    target_role = interaction.guild.get_role(target_role_id) if target_role_id else None
-    rank_role_ids = {r[0] for r in ranks}
-    current_rank_roles = [r for r in user.roles if r.id in rank_role_ids]
- 
-    bot_member = interaction.guild.me
-    lines = [
-        f"**Balance:** {bal:,} coins",
-        f"**Should have:** {target_role.mention if target_role else '*(none — below lowest threshold)*'}",
-        f"**Currently has:** {', '.join(r.mention for r in current_rank_roles) if current_rank_roles else '*(none)*'}",
-    ]
-    if target_role:
-        if not bot_member.guild_permissions.manage_roles:
-            lines.append("⚠️ I'm missing the **Manage Roles** permission.")
-        elif bot_member.top_role <= target_role:
-            lines.append(f"⚠️ My top role is below or equal to {target_role.mention} — move my role higher.")
-        elif target_role not in current_rank_roles:
-            lines.append("⚠️ Nothing obviously wrong with permissions — try `/refreshbalanceranks`.")
-    embed = discord.Embed(title=f"🔍 Balance Rank Check — {user.display_name}",
-                          description="\n".join(lines), color=discord.Color.blurple())
-    await interaction.response.send_message(embed=embed)
- 
-@bot.command(name="checkbalancerank")
-async def pfx_checkbalancerank(ctx, user: discord.Member = None):
-    await checkbalancerank._callback(FakeInteraction(ctx), user)
- 
 # ═══════════════════════════════════════════════════════
 # STATS PANEL
 # ═══════════════════════════════════════════════════════
@@ -634,9 +541,8 @@ async def _build_stats_embed(guild: discord.Guild) -> discord.Embed:
             members, pool = await cur.fetchone()
     embed = discord.Embed(
         title="📊 Stats",
-        description="Click a button below to check your personal stats.\nAll responses are **private**.",
+        description="Click a button below to check your personal stats.",
         color=discord.Color.blurple())
-    embed.add_field(name="🎟 Current Mega Raffle Pool", value=f"{pool:,} tickets across {members:,} member(s)", inline=False)
     embed.set_footer(text="Results are only visible to you")
     return embed
  
@@ -686,44 +592,8 @@ class StatsChannelView(discord.ui.View):
         embed.add_field(name="Chests Available", value=f"{usable // common.CHEST_COST}", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
  
-    @discord.ui.button(label="🎟 Mega Tickets", style=discord.ButtonStyle.secondary, custom_id="stats_panel:tickets", row=0)
-    async def check_tickets(self, interaction: discord.Interaction, btn):
-        gid, uid = interaction.guild.id, interaction.user.id
-        tickets = await get_tickets(gid, uid)
-        async with get_db() as db:
-            async with db.execute("SELECT COALESCE(SUM(tickets),0) FROM mega_tickets WHERE guild_id=?", (gid,)) as cur:
-                total = (await cur.fetchone())[0]
-        chance = (tickets / total * 100) if total else 0
-        embed = discord.Embed(title="🎟 Your Mega Raffle Stats", color=discord.Color.gold())
-        embed.add_field(name="Your Tickets", value=f"{tickets:,}", inline=True)
-        embed.add_field(name="Total Pool", value=f"{total:,}", inline=True)
-        embed.add_field(name="Win Chance", value=f"{chance:.2f}%", inline=True)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
- 
-    @discord.ui.button(label="🎒 Inventory", style=discord.ButtonStyle.secondary, custom_id="stats_panel:inventory", row=0)
-    async def check_inventory(self, interaction: discord.Interaction, btn):
-        gid, uid = interaction.guild.id, interaction.user.id
-        inv = await inventory_get(gid, uid)
-        embed = discord.Embed(title=f"🎒 {interaction.user.display_name}'s Inventory", color=discord.Color.blurple())
-        if not inv:
-            embed.description = "Inventory is empty."
-        else:
-            lines = []
-            for item_name, qty in inv:
-                if item_name == VIP_CHEST_KEY: lines.append(f"• 🔑 **{item_name}** ×{qty}")
-                elif item_name == GAMBLE_TOKEN: lines.append(f"• 🎲 **{item_name}** ×{qty}")
-                else:
-                    si = await get_item(gid, item_name)
-                    if si:
-                        r = interaction.guild.get_role(si[3])
-                        lines.append(f"• **{item_name}** ×{qty}" + (f" → {r.mention}" if r else ""))
-                    else:
-                        lines.append(f"• 📦 **{item_name}** ×{qty}")
-            embed.description = "\n".join(lines[:30])
-            if len(inv) > 30: embed.set_footer(text=f"Showing 30 of {len(inv)} items")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
- 
- 
+
+
 @bot.tree.command(name="setstatchannel", description="Post the stats panel embed in a channel")
 @app_commands.describe(channel="Channel to post the panel in")
 @command_enabled()
@@ -755,434 +625,7 @@ async def pfx_setstatchannel(ctx, channel: discord.TextChannel):
     if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
     await setstatchannel._callback(FakeInteraction(ctx), channel)
  
-# ═══════════════════════════════════════════════════════
-# TRADE SYSTEM
-# ═══════════════════════════════════════════════════════
- 
-trade_sessions: dict = {}
- 
-class TradeOffer:
-    def __init__(self):
-        self.balance = 0; self.xp = 0; self.tickets = 0
-        self.items: list[tuple[str, int]] = []
- 
-    def display(self) -> str:
-        lines = []
-        if self.balance > 0: lines.append(f"💰 {self.balance:,} coins")
-        if self.xp > 0:     lines.append(f"⭐ {self.xp:,} xp")
-        if self.tickets > 0: lines.append(f"🎟 {self.tickets:,} ticket(s)")
-        for n, q in self.items: lines.append(f"🎒 {q}x {n}")
-        return "\n".join(lines) if lines else "*Nothing*"
- 
- 
-class TradeSession:
-    def __init__(self, guild_id, initiator_id, target_id):
-        self.guild_id, self.initiator_id, self.target_id = guild_id, initiator_id, target_id
-        self.offers = {initiator_id: None, target_id: None}
-        self.confirmed = {initiator_id: False, target_id: False}
-        self.message = None; self.done = False; self.lock = asyncio.Lock()
- 
-    def session_key(self):
-        return (self.guild_id, frozenset({self.initiator_id, self.target_id}))
- 
-    def build_embed(self, guild):
-        init = guild.get_member(self.initiator_id); tgt = guild.get_member(self.target_id)
-        embed = discord.Embed(title="🤝 Trade Offer", color=discord.Color.blurple())
-        io, to = self.offers[self.initiator_id], self.offers[self.target_id]
-        is_ = "✅" if self.confirmed[self.initiator_id] else ("📋" if io else "❓")
-        ts_ = "✅" if self.confirmed[self.target_id] else ("📋" if to else "❓")
-        embed.add_field(name=f"{init.display_name if init else 'User'}'s offer {is_}",
-                        value=io.display() if io else "*Not set yet*", inline=True)
-        embed.add_field(name=f"{tgt.display_name if tgt else 'User'}'s offer {ts_}",
-                        value=to.display() if to else "*Not set yet*", inline=True)
-        return embed
- 
- 
-class TradeOfferModal(discord.ui.Modal, title="Set Your Trade Offer"):
-    balance_input = discord.ui.TextInput(label="Balance to offer (0 for none)", default="0", max_length=20)
-    xp_input     = discord.ui.TextInput(label="xp to offer (0 for none)", default="0", max_length=20)
-    tickets_input = discord.ui.TextInput(label="Mega tickets (0 for none)", default="0", max_length=20)
-    items_input   = discord.ui.TextInput(label="Items/boxes (blank for none)",
-                                         placeholder="Name:qty, Name2:qty2", required=False, max_length=300)
- 
-    def __init__(self, session):
-        super().__init__()
-        self.session = session
- 
-    async def on_submit(self, interaction: discord.Interaction):
-        uid = interaction.user.id; session = self.session
-        try: balance = max(0, int(self.balance_input.value.strip()))
-        except ValueError:
-            await interaction.response.send_message("❌ Invalid balance.", ephemeral=True); return
-        try: xp = max(0, int(self.xp_input.value.strip()))
-        except ValueError:
-            await interaction.response.send_message("❌ Invalid xp.", ephemeral=True); return
-        try: tickets = max(0, int(self.tickets_input.value.strip()))
-        except ValueError:
-            await interaction.response.send_message("❌ Invalid tickets.", ephemeral=True); return
-        items = []
-        for part in (self.items_input.value or "").split(","):
-            part = part.strip()
-            if not part: continue
-            if ":" not in part:
-                await interaction.response.send_message(f"❌ Bad format `{part}` — use Name:qty", ephemeral=True); return
-            iname, qty_str = part.rsplit(":", 1)
-            try:
-                qty = int(qty_str.strip()); assert qty > 0
-            except Exception:
-                await interaction.response.send_message(f"❌ Invalid qty for {iname}", ephemeral=True); return
-            items.append((iname.strip(), qty))
-        if balance > 0 and await get_balance(interaction.guild.id, uid) < balance:
-            await interaction.response.send_message("❌ Not enough coins.", ephemeral=True); return
-        if xp > 0 and await get_xp(interaction.guild.id, uid) < xp:
-            await interaction.response.send_message("❌ Not enough xp.", ephemeral=True); return
-        if tickets > 0 and await get_tickets(session.guild_id, uid) < tickets:
-            await interaction.response.send_message("❌ Not enough tickets.", ephemeral=True); return
-        if items:
-            inv = {n.lower(): q for n, q in await inventory_get(self.session.guild_id, uid)}
-            for n, q in items:
-                if inv.get(n.lower(), 0) < q:
-                    await interaction.response.send_message(f"❌ Not enough {n}.", ephemeral=True); return
-        offer = TradeOffer()
-        offer.balance, offer.xp, offer.tickets, offer.items = balance, xp, tickets, items
-        session.offers[uid] = offer; session.confirmed[uid] = False
-        await session.message.edit(embed=session.build_embed(interaction.guild), view=TradeView(session))
-        await interaction.response.send_message("✅ Offer updated!", ephemeral=True)
- 
- 
-class TradeView(discord.ui.View):
-    def __init__(self, session):
-        super().__init__(timeout=300)
-        self.session = session
- 
-    async def interaction_check(self, interaction):
-        if interaction.user.id not in (self.session.initiator_id, self.session.target_id):
-            await interaction.response.send_message("❌ Not your trade.", ephemeral=True); return False
-        if self.session.done:
-            await interaction.response.send_message("❌ Trade already finished.", ephemeral=True); return False
-        return True
- 
-    @discord.ui.button(label="Set Offer", style=discord.ButtonStyle.primary, emoji="📋")
-    async def set_offer(self, interaction, button):
-        await interaction.response.send_modal(TradeOfferModal(self.session))
- 
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
-    async def confirm(self, interaction, button):
-        session = self.session
-        if session.offers[interaction.user.id] is None:
-            await interaction.response.send_message("❌ Set your offer first.", ephemeral=True); return
-        async with session.lock:
-            session.confirmed[interaction.user.id] = True
-            if not all(session.confirmed.values()):
-                await session.message.edit(embed=session.build_embed(interaction.guild), view=self)
-                await interaction.response.send_message("✅ Confirmed! Waiting for other party.", ephemeral=True); return
-            session.done = True
-            success, err = await execute_trade(session)
-            trade_sessions.pop(session.session_key(), None)
-        if success:
-            await session.message.edit(embed=discord.Embed(title="✅ Trade Complete!", color=discord.Color.green()), view=None)
-            await interaction.response.send_message("✅ Trade executed!", ephemeral=True)
-        else:
-            session.confirmed[session.initiator_id] = session.confirmed[session.target_id] = False
-            session.done = False
-            await session.message.edit(embed=session.build_embed(interaction.guild), view=TradeView(session))
-            await interaction.response.send_message(f"❌ {err}", ephemeral=True)
- 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌")
-    async def cancel(self, interaction, button):
-        session = self.session; session.done = True
-        trade_sessions.pop(session.session_key(), None)
-        await session.message.edit(embed=discord.Embed(title="❌ Trade Cancelled", color=discord.Color.red()), view=None)
-        await interaction.response.send_message("Trade cancelled.", ephemeral=True)
- 
-    async def on_timeout(self):
-        if not self.session.done:
-            self.session.done = True
-            trade_sessions.pop(self.session.session_key(), None)
-            if self.session.message:
-                try:
-                    await self.session.message.edit(
-                        embed=discord.Embed(title="⏰ Trade xpired", color=discord.Color.light_grey()), view=None)
-                except Exception: pass
- 
- 
-async def execute_trade(session) -> tuple[bool, str]:
-    iid, tid = session.initiator_id, session.target_id
-    gid = session.guild_id
-    for uid, offer in [(iid, session.offers[iid]), (tid, session.offers[tid])]:
-        if offer.balance > 0 and await get_balance(gid, uid) < offer.balance:
-            return False, f"<@{uid}> no longer has enough coins."
-        if offer.xp > 0 and await get_xp(gid, uid) < offer.xp:
-            return False, f"<@{uid}> no longer has enough xp."
-        if offer.tickets > 0 and await get_tickets(gid, uid) < offer.tickets:
-            return False, f"<@{uid}> no longer has enough tickets."
-        inv = {n.lower(): q for n, q in await inventory_get(gid, uid)}
-        for n, q in offer.items:
-            if inv.get(n.lower(), 0) < q:
-                return False, f"<@{uid}> no longer has {q}x {n}."
-    io, to = session.offers[iid], session.offers[tid]
-    if io.balance > 0: await add_balance(gid, iid, -io.balance, bot=bot); await add_balance(gid, tid, io.balance, bot=bot)
-    if to.balance > 0: await add_balance(gid, tid, -to.balance, bot=bot); await add_balance(gid, iid, to.balance, bot=bot)
-    if io.xp > 0: await add_xp(gid, iid, -io.xp); await add_xp(gid, tid, io.xp)
-    if to.xp > 0: await add_xp(gid, tid, -to.xp); await add_xp(gid, iid, to.xp)
-    if io.tickets > 0: await add_tickets(gid, iid, -io.tickets); await add_tickets(gid, tid, io.tickets)
-    if to.tickets > 0: await add_tickets(gid, tid, -to.tickets); await add_tickets(gid, iid, to.tickets)
-    for n, q in io.items: await inventory_remove(gid, iid, n, q); await inventory_add(gid, tid, n, q)
-    for n, q in to.items: await inventory_remove(gid, tid, n, q); await inventory_add(gid, iid, n, q)
- 
-    guild = bot.get_guild(gid)
-    if guild:
-        init = guild.get_member(iid); tgt = guild.get_member(tid)
-        embed = discord.Embed(title="🤝 Trade Executed", color=discord.Color.blurple(), timestamp=datetime.now(UTC))
-        embed.add_field(name=f"{init.display_name if init else '?'} gave", value=io.display(), inline=True)
-        embed.add_field(name=f"{tgt.display_name if tgt else '?'} gave", value=to.display(), inline=True)
-        await log_event(gid, "trade", embed)
-    return True, ""
- 
- 
-@bot.tree.command(name="trade", description="Initiate a trade with another user")
-@command_enabled()
-async def trade(interaction: discord.Interaction, user: discord.Member):
-    if user.id == interaction.user.id:
-        await interaction.response.send_message("❌ Can't trade with yourself.", ephemeral=True); return
-    if user.bot:
-        await interaction.response.send_message("❌ Can't trade with a bot.", ephemeral=True); return
-    if await is_blacklisted(interaction.guild.id, interaction.user.id):
-        await interaction.response.send_message(
-            "🚫 You're blacklisted from the economy.", ephemeral=True); return
-    if await is_blacklisted(interaction.guild.id, user.id):
-        await interaction.response.send_message(
-            f"🚫 {user.mention} is blacklisted and can't trade.", ephemeral=True); return
-    key = (interaction.guild.id, frozenset({interaction.user.id, user.id}))
-    if key in trade_sessions:
-        await interaction.response.send_message("❌ A trade is already in progress.", ephemeral=True); return
-    session = TradeSession(interaction.guild.id, interaction.user.id, user.id)
-    trade_sessions[key] = session
-    await interaction.response.send_message(
-        f"🤝 {interaction.user.mention} wants to trade with {user.mention}!\n"
-        f"Click **Set Offer** to enter what you're offering, then **Confirm**.",
-        embed=session.build_embed(interaction.guild), view=TradeView(session))
-    session.message = await interaction.original_response()
- 
-@bot.command(name="trade")
-async def pfx_trade(ctx, user: discord.Member):
-    if user.id == ctx.author.id: await ctx.send("❌ Can't trade with yourself."); return
-    if user.bot: await ctx.send("❌ Can't trade with a bot."); return
-    key = (ctx.guild.id, frozenset({ctx.author.id, user.id}))
-    if key in trade_sessions: await ctx.send("❌ A trade is already in progress."); return
-    session = TradeSession(ctx.guild.id, ctx.author.id, user.id)
-    trade_sessions[key] = session
-    msg = await ctx.send(f"🤝 {ctx.author.mention} wants to trade with {user.mention}!\n"
-                        "Click **Set Offer**, then **Confirm**.",
-                        embed=session.build_embed(ctx.guild), view=TradeView(session))
-    session.message = msg
- 
-# ═══════════════════════════════════════════════════════
-# ITEM STORE & INVENTORY
-# ═══════════════════════════════════════════════════════
- 
-item_group = app_commands.Group(name="item", description="Item store commands")
-bot.tree.add_command(item_group)
- 
-@item_group.command(name="add", description="Add item to store")
-@command_enabled()
-async def item_add(interaction: discord.Interaction, name: str, price: int, role: discord.Role, description: str):
-    if not await is_allowed_to_giveaway(interaction):
-        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
-    await add_item(interaction.guild.id, name, price, role.id, description)
-    await interaction.response.send_message(f"✅ Added **{name}** to the store.")
- 
-@item_group.command(name="remove", description="Remove item from store")
-@command_enabled()
-async def item_remove(interaction: discord.Interaction, name: str):
-    if not await is_allowed_to_giveaway(interaction):
-        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
-    if not await get_item(interaction.guild.id, name):
-        await interaction.response.send_message("❌ Item not found."); return
-    await remove_item(interaction.guild.id, name)
-    await interaction.response.send_message(f"🗑 Removed **{name}** from the store.")
- 
-@item_group.command(name="info", description="View item info")
-@command_enabled()
-async def item_info(interaction: discord.Interaction, name: str):
-    item = await get_item(interaction.guild.id, name)
-    if item:
-        _, item_name, price, role_id, description = item
-        role = interaction.guild.get_role(role_id)
-        embed = discord.Embed(title=f"🛒 {item_name}", color=discord.Color.blurple())
-        embed.add_field(name="Price", value=f"{price:,} coins", inline=False)
-        embed.add_field(name="Role", value=role.mention if role else "?", inline=False)
-        embed.add_field(name="Description", value=description, inline=False)
-        await interaction.response.send_message(embed=embed); return
-    await interaction.response.send_message(
-        "❌ Item not found. (Box info lives in the drops bot — use that bot's `/item info`.)")
- 
-@item_group.command(name="store", description="View item store")
-@command_enabled()
-async def item_store_cmd(interaction: discord.Interaction):
-    items = await get_all_items(interaction.guild.id)
-    if not items:
-        await interaction.response.send_message("❌ Store is empty."); return
-    embed = discord.Embed(title="🛒 Item Store", color=discord.Color.green())
-    for _, item_name, price, role_id, description in items:
-        role = interaction.guild.get_role(role_id)
-        embed.add_field(name=item_name, value=f"💰 {price:,} coins\n🎭 {role.mention if role else '?'}", inline=False)
-    await interaction.response.send_message(embed=embed)
- 
-@item_group.command(name="buy", description="Buy an item — goes to your inventory")
-@command_enabled()
-async def item_buy(interaction: discord.Interaction, name: str):
-    item = await get_item(interaction.guild.id, name)
-    if not item:
-        await interaction.response.send_message("❌ Item not found."); return
-    _, item_name, price, role_id, description = item
-    bal = await get_balance(interaction.guild.id, interaction.user.id)
-    if bal < price:
-        await interaction.response.send_message("❌ Not enough balance."); return
-    if not interaction.guild.get_role(role_id):
-        await interaction.response.send_message("❌ Role no longer exists."); return
-    await add_balance(interaction.guild.id, interaction.user.id, -price, bot=bot)
-    await inventory_add(interaction.guild.id, interaction.user.id, item_name, 1)
-    await interaction.response.send_message(
-        f"✅ Bought **{item_name}** for {price:,} coins. Use `/item use {item_name}` to redeem!")
-    await log_event(interaction.guild.id, "item", _log_embed(
-        "🛒 Item Purchased", discord.Color.blue(), User=interaction.user.mention, Item=item_name))
- 
-@item_group.command(name="use", description="Use a store item to receive its role")
-@command_enabled()
-async def item_use(interaction: discord.Interaction, name: str):
-    item = await get_item(interaction.guild.id, name)
-    if not item:
-        await interaction.response.send_message("❌ Item not found."); return
-    _, item_name, price, role_id, description = item
-    inv = await inventory_get(interaction.guild.id, interaction.user.id)
-    owned = {n.lower(): q for n, q in inv}
-    if owned.get(item_name.lower(), 0) < 1:
-        await interaction.response.send_message(f"❌ You don't have **{item_name}** in your inventory."); return
-    role = interaction.guild.get_role(role_id)
-    if not role:
-        await interaction.response.send_message("❌ Role no longer exists."); return
-    member = interaction.guild.get_member(interaction.user.id)
-    if role in member.roles:
-        await interaction.response.send_message(f"❌ You already have **{role.name}**."); return
-    if not await inventory_remove(interaction.guild.id, interaction.user.id, item_name, 1):
-        await interaction.response.send_message("❌ Failed to remove item."); return
-    await member.add_roles(role)
-    await interaction.response.send_message(f"✅ Used **{item_name}** — you now have {role.mention}!")
-    await log_event(interaction.guild.id, "item", _log_embed(
-        "✅ Item Used (Role Claimed)", discord.Color.blue(), User=interaction.user.mention, Item=item_name))
- 
-@item_group.command(name="give", description="Give an item to a user (admin only)")
-@app_commands.describe(user="Target user", name="Item name", quantity="How many (default 1)")
-@command_enabled()
-async def item_give(interaction: discord.Interaction, user: discord.Member, name: str, quantity: int = 1):
-    if not await is_allowed_to_giveaway(interaction):
-        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
-    if quantity <= 0:
-        await interaction.response.send_message("❌ Quantity must be ≥ 1.", ephemeral=True); return
-    store_item = await get_item(interaction.guild.id, name)
-    canonical = store_item[1] if store_item else name.strip()
-    if not store_item and name.strip() not in (VIP_CHEST_KEY, GAMBLE_TOKEN):
-        await interaction.response.send_message(
-            f"ℹ️ **{name}** isn't a known store item — giving it as a raw inventory entry anyway.",
-            ephemeral=True)
-    await inventory_add(interaction.guild.id, user.id, canonical, quantity)
-    await interaction.response.send_message(f"✅ Gave **{quantity}x {canonical}** to {user.mention}.")
-    await log_event(interaction.guild.id, "item", _log_embed(
-        "🎒 Item Given", discord.Color.green(),
-        Admin=interaction.user.mention, User=user.mention, Item=canonical, Qty=str(quantity)))
- 
-@item_group.command(name="take", description="Take an item from a user (admin only)")
-@app_commands.describe(user="Target user", name="Item name", quantity="How many (default 1)")
-@command_enabled()
-async def item_take(interaction: discord.Interaction, user: discord.Member, name: str, quantity: int = 1):
-    if not await is_allowed_to_giveaway(interaction):
-        await interaction.response.send_message("❌ No permission.", ephemeral=True); return
-    if quantity <= 0:
-        await interaction.response.send_message("❌ Quantity must be ≥ 1.", ephemeral=True); return
-    store_item = await get_item(interaction.guild.id, name)
-    canonical = store_item[1] if store_item else name.strip()
-    if not await inventory_remove(interaction.guild.id, user.id, canonical, quantity):
-        await interaction.response.send_message(f"❌ {user.mention} doesn't have {quantity}x **{canonical}**."); return
-    await interaction.response.send_message(f"🗑 Took **{quantity}x {canonical}** from {user.mention}.")
-    await log_event(interaction.guild.id, "item", _log_embed(
-        "🎒 Item Taken", discord.Color.red(),
-        Admin=interaction.user.mention, User=user.mention, Item=canonical, Qty=str(quantity)))
- 
-@item_group.command(name="inv", description="Check a user's inventory")
-@app_commands.describe(user="User to check (defaults to yourself)")
-@command_enabled()
-async def item_inv(interaction: discord.Interaction, user: discord.Member = None):
-    user = user or interaction.user
-    inv = await inventory_get(interaction.guild.id, user.id)
-    embed = discord.Embed(title=f"🎒 {user.display_name}'s Inventory", color=discord.Color.blurple())
-    if not inv:
-        embed.description = "Inventory is empty."
-    else:
-        lines = []
-        for item_name, quantity in inv:
-            si = await get_item(interaction.guild.id, item_name)
-            if si:
-                role = interaction.guild.get_role(si[3])
-                lines.append(f"• **{item_name}** x{quantity}" + (f" → {role.mention}" if role else ""))
-            elif item_name == VIP_CHEST_KEY:
-                lines.append(f"• 🔑 **{item_name}** x{quantity}")
-            elif item_name == GAMBLE_TOKEN:
-                lines.append(f"• 🎲 **{item_name}** x{quantity}")
-            else:
-                lines.append(f"• 📦 **{item_name}** x{quantity}")
-        embed.description = "\n".join(lines)
-    await interaction.response.send_message(embed=embed)
- 
- 
-@bot.group(name="item", invoke_without_command=True)
-async def pfx_item(ctx):
-    p = common._BOT_PREFIX
-    await ctx.send(
-        f"**Item commands:** `{p}item store` · `{p}item buy <name>` · `{p}item use <name>` · "
-        f"`{p}item inv [@user]` · `{p}item info <name>` · `{p}item give @user <name> [qty]` · "
-        f"`{p}item take @user <name> [qty]` · `{p}item add <name> <price> @role <desc>` · `{p}item remove <name>`")
- 
-@pfx_item.command(name="store")
-async def pfx_item_store(ctx):
-    await item_store_cmd._callback(FakeInteraction(ctx))
- 
-@pfx_item.command(name="buy")
-async def pfx_item_buy_cmd(ctx, *, name: str):
-    await item_buy._callback(FakeInteraction(ctx), name)
- 
-@pfx_item.command(name="use")
-async def pfx_item_use_cmd(ctx, *, name: str):
-    await item_use._callback(FakeInteraction(ctx), name)
- 
-@pfx_item.command(name="inv")
-async def pfx_item_inv_cmd(ctx, user: discord.Member = None):
-    await item_inv._callback(FakeInteraction(ctx), user)
- 
-@pfx_item.command(name="info")
-async def pfx_item_info_cmd(ctx, *, name: str):
-    await item_info._callback(FakeInteraction(ctx), name)
- 
-@pfx_item.command(name="give")
-async def pfx_item_give_cmd(ctx, user: discord.Member, name: str, quantity: int = 1):
-    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    await item_give._callback(FakeInteraction(ctx), user, name, quantity)
- 
-@pfx_item.command(name="take")
-async def pfx_item_take_cmd(ctx, user: discord.Member, name: str, quantity: int = 1):
-    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    await item_take._callback(FakeInteraction(ctx), user, name, quantity)
- 
-@pfx_item.command(name="add")
-async def pfx_item_add_cmd(ctx, name: str, price: int, role: discord.Role, *, description: str):
-    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    await item_add._callback(FakeInteraction(ctx), name, price, role, description)
- 
-@pfx_item.command(name="remove")
-async def pfx_item_remove_cmd(ctx, *, name: str):
-    if not await _is_allowed_ctx(ctx): await ctx.send("❌ No permission."); return
-    await item_remove._callback(FakeInteraction(ctx), name)
- 
+
 # ═══════════════════════════════════════════════════════
 # CORE EVENTS
 # ═══════════════════════════════════════════════════════
@@ -1256,24 +699,6 @@ async def _log_prefix_command(ctx: commands.Context):
     await log_event(ctx.guild.id, "command", embed)
 
 # ── gift ─────────────────────────────────────────────────────────────────────
-@bot.command(name="gift")
-async def cmd_gift(ctx, user: discord.Member, amount: str):
-    parsed = parse_amount(amount)
-    if parsed is None or parsed <= 0: await ctx.send("❌ Invalid amount."); return
-    if user.id == ctx.author.id: await ctx.send("❌ You cannot gift yourself."); return
-    gid = ctx.guild.id
-    bal = await get_balance(gid, ctx.author.id)
-    if bal < parsed: await ctx.send("❌ Not enough balance."); return
-    if await is_blacklisted(gid, ctx.author.id):
-        await ctx.send("🚫 You're blacklisted from the economy."); return
-    if await is_blacklisted(gid, user.id):
-        await ctx.send(f"🚫 {user.mention} is blacklisted and can't receive coins."); return
-    await add_balance(gid, ctx.author.id, -parsed, bot=bot)
-    await add_balance(gid, user.id, parsed, bot=bot)
-    await add_stat(gid, ctx.author.id, "gifted_balance", parsed)
-    await ctx.send(f"💸 You gifted **{parsed:,}** coins to {user.mention}!")
-    await log_event(gid, "balance", _log_embed("🎁 Gift Sent", discord.Color.green(),
-        From=ctx.author.mention, To=user.mention, Amount=f"{parsed:,}"))
 
 @bot.tree.command(name="gift", description="Give your own coins to another user")
 @app_commands.describe(user="Who to gift to",
@@ -1459,10 +884,10 @@ async def rankspanelembed(interaction: discord.Interaction):
         description="Ranks are updated through your balance.",
         color=discord.Color.red()
     )
-    embed.add_field(name="Novice", value="250M+", inline=False)
-    embed.add_field(name="Celestial", value="1.5B+", inline=False)
-    embed.add_field(name="Elite", value="5B+", inline=False)
-    embed.add_field(name="Royal", value="20B+", inline=False)
+    embed.add_field(name="Novice 🌱", value="250M+", inline=True)
+    embed.add_field(name="Celestial 🏵️", value="1.5B+", inline=True)
+    embed.add_field(name="Elite 🐉", value="5B+", inline=True)
+    embed.add_field(name="Royal 👾", value="20B+", inline=True)
 
     await interaction.channel.send(embed=embed)
 
@@ -1472,32 +897,32 @@ async def guide(interaction: discord.Interaction):
     await interaction.response.send_message("NOVA economy guide is being sent", ephemeral=True)
 
     embed = discord.Embed(
-        title="NOVA ECONOMY GUIDE",
+        title="🪐 NOVA ECONOMY GUIDE",
         description="""Welcome to NOVA. This guide explains how the economy works and how you can get started.
 
-## EARNING
+## 💸 EARNING
 
-You can earn NOVA currency through the available economy features.
+👉🏻 You can earn NOVA currency through the available economy features.
 
-The more active you are, the more opportunities you have to build your balance.
+👉🏻 The more active you are, the more opportunities you have to build your balance.
 
-## TRADING
+## 🔁 TRADING
 
-Your NOVA balance can be used to trade with other members.
+👉🏻 Your NOVA balance can be used to trade with other members.
 
-You can exchange your balance for items, or trade items you no longer need for NOVA currency.
+👉🏻 You can exchange your balance for items, or trade items you no longer need for NOVA currency.
 
-## CROSS-TRADING
+## ❎ CROSS-TRADING
 
-NOVA allows you to trade between different games.
+👉🏻 NOVA allows you to trade between different games, **BUT NOT DIRECTLY**.
 
-For example, you can trade an item from one game for NOVA currency and use that currency to get an item from another game.
+👉🏻 For example, you can trade an item from one game for NOVA currency and use that currency to get an item from another game.
 
-## BALANCE
+## 🪙 BALANCE
 
-Your balance is your NOVA currency. Keep track of it and use it to trade, save, or build up your wealth.
+👉🏻 Your balance is your NOVA currency. Keep track of it and use it to trade, save, or build up your wealth.
 
-## GETTING STARTED
+## 🔮 GETTING STARTED
 
 1. Start earning NOVA currency.
 2. Build up your balance.
@@ -1505,7 +930,7 @@ Your balance is your NOVA currency. Keep track of it and use it to trade, save, 
 4. Trade with other members.
 5. Keep building your balance.
 
-**The more you trade, the more opportunities you have.**""",
+**💖 The more you trade, the more opportunities you have.**""",
         color=discord.Color.red()
     )
 
