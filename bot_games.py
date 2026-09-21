@@ -282,7 +282,7 @@ async def host(interaction: discord.Interaction,
             f"**Prize:** {prize}\n"
             f"**Reward:** 💰 {per_winner:,} coins per winner\n"
             f"**Winners:** {winners}\n"
-            f"**Ends:** <t:{int(end_time.timestamp())}:R>"
+            f"**Ends:** <t:{int(end_time.timestamp())}:R>\n"
             f"""Go to <#1549077648305692682> to view your balance
 Activity rank improves your chances to win giveaways"""
         ),
