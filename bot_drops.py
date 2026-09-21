@@ -129,7 +129,7 @@ async def pfx_removechestprize(ctx, chest_type: str, prize_id: int):
 @bot.tree.command(name="listchestprizes",
                   description="List all prizes in the xp or VIP chest loot table")
 @app_commands.describe(chest_type="Which chest to list")
-@app_commands.choices(chest_type=_CHEST_TYPE_DESC_CHOICES)
+@app_commands.choices(chest_type=_CHEST_CHOICES)
 @command_enabled()
 async def slash_listchestprizes(interaction: discord.Interaction, chest_type: str = "chest"):
     await interaction.response.defer()
@@ -152,10 +152,6 @@ async def slash_listchestprizes(interaction: discord.Interaction, chest_type: st
     view = EmbedPaginator(pages, interaction.user.id) if len(pages) > 1 else None
     await interaction.followup.send(embed=pages[0], view=view)
 
-_CHEST_TYPE_DESC_CHOICES = [
-    app_commands.Choice(name="Chest", value="chest"),
-    app_commands.Choice(name="VIP Chest", value="vipchest"),
-]
 
 @bot.tree.command(name="addrarechestdrop", description="Mark a chest prize as a rare drop")
 @app_commands.describe(chest_type="Which chest", prize="Prize name or numeric ID from /listchestprizes")
