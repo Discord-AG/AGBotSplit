@@ -126,6 +126,19 @@ async def pfx_removechestprize(ctx, chest_type: str, prize_id: int):
     if chest_type not in ("chest","vipchest"): await ctx.send("❌ Use `chest` or `vipchest`."); return
     await removechestprize._callback(FakeInteraction(ctx), chest_type, prize_id)
 
+def paginate_lines(lines, title, color):
+    pages = []
+
+    for i in range(0, len(lines), 10):
+        embed=discord.Embed(
+            title=title,
+            description="\n".join(lines[i:i + 10]),
+            color=color
+        )
+        pages.append(embed)
+
+return pages
+
 @bot.tree.command(name="listchestprizes",
                   description="List all prizes in the xp or VIP chest loot table")
 @app_commands.describe(chest_type="Which chest to list")
